@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import socket
 import subprocess
 import sys
@@ -154,62 +155,184 @@ def profile_dir_status(profile_dir: Path) -> dict[str, object]:
 
 
 def launch_browser(config: BrowserLaunchConfig) -> BrowserLaunchResult:
-    executable = resolve_browser_binary()
+    """Launch Chromium via Playwright's persistent context and block until it closes.
+
+    Returns a `BrowserLaunchResult` only after the browser has exited cleanly. Use
+    `launch_persistent_context_handle` if you need non-blocking access to the
+    context object (e.g. tests).
+    """
+    handle = launch_persistent_context_handle(config)
+    try:
+        handle.wait_until_closed()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        handle.close()
+    return BrowserLaunchResult(
+        executable=Path("chromium"),
+        port=config.port,
+        profile_dir=handle.profile_dir,
+        process_id=handle.process_id,
+    )
+
+
+@dataclass
+class _PersistentContextHandle:
+    playwright: object
+    context: object
+    profile_dir: Path
+    config: BrowserLaunchConfig
+    process_id: int | None = None
+    _closed: bool = False
+
+    def wait_until_closed(self) -> None:
+        closed_event = {"flag": False}
+
+        def _on_close(_ctx) -> None:
+            closed_event["flag"] = True
+
+        try:
+            self.context.on("close", _on_close)
+        except Exception:
+            pass
+
+        try:
+            while not closed_event["flag"]:
+                try:
+                    _ = self.context.pages
+                except Exception:
+                    break
+                time.sleep(0.5)
+        finally:
+            pass
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.context.close()
+        except Exception:
+            pass
+        try:
+            self.playwright.stop()
+        except Exception:
+            pass
+
+
+def launch_persistent_context_handle(
+    config: BrowserLaunchConfig,
+    *,
+    sync_playwright_factory: Callable[[], object] | None = None,
+) -> _PersistentContextHandle:
     profile_dir = config.profile_dir.expanduser().resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
 
     existing_pids = find_chrome_pids_using_profile(profile_dir)
     if existing_pids:
         sys.stderr.write(
-            f"warning: Chrome is already running with profile {profile_dir} (PID(s): "
-            f"{', '.join(str(p) for p in existing_pids)}). The new launch may attach to that "
-            "process and ignore --remote-debugging-port. Quit Chrome fully (Cmd+Q on macOS) "
-            "before re-running `browse chrome`.\n"
+            f"warning: A browser is already running with profile {profile_dir} "
+            f"(PID(s): {', '.join(str(p) for p in existing_pids)}). "
+            "Run `browse chrome --cleanup` to terminate it, then retry.\n"
         )
 
-    args = [
-        str(executable),
-        f"--remote-debugging-port={config.port}",
-        f"--user-data-dir={profile_dir}",
-        "--profile-directory=Default",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--new-window",
-        "about:blank",
-    ]
+    if sync_playwright_factory is None:
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError as exc:
+            raise BrowseError(
+                "Playwright is not importable. Reinstall `browse` and rerun `browse install`."
+            ) from exc
+        sync_playwright_factory = sync_playwright
 
-    process = subprocess.Popen(
-        args,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-    deadline = time.time() + 5.0
-    port_opened = False
-    while time.time() < deadline:
-        if is_port_open(config.port):
-            port_opened = True
-            break
-        time.sleep(0.1)
-    if not port_opened:
-        hint = ""
-        if existing_pids:
-            hint = (
-                f" An existing Chrome process (PID(s) {', '.join(str(p) for p in existing_pids)}) "
-                "may have absorbed the launch and ignored the debug port. Fully quit Chrome and retry."
-            )
+    playwright = None
+    try:
+        playwright = sync_playwright_factory().start()
+        context = playwright.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            headless=False,
+            viewport=DEFAULT_VIEWPORT,
+            args=[
+                f"--remote-debugging-port={config.port}",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ],
+        )
+    except Exception as exc:
+        if playwright is not None:
+            try:
+                playwright.stop()
+            except Exception:
+                pass
         raise BrowseError(
-            f"Chrome launched (PID {process.pid}) but the remote debugging port {config.port} "
-            f"never opened.{hint}"
-        )
+            "Could not launch Chromium via Playwright. "
+            "Run `browse install` to ensure Playwright's Chromium is downloaded."
+        ) from exc
 
-    return BrowserLaunchResult(
-        executable=executable,
-        port=config.port,
+    if not context.pages:
+        try:
+            context.new_page()
+        except Exception:
+            pass
+
+    process_id: int | None = None
+    try:
+        browser_proc = getattr(getattr(context, "browser", None), "process", None)
+        if browser_proc is not None:
+            process_id = getattr(browser_proc, "pid", None)
+    except Exception:
+        process_id = None
+
+    return _PersistentContextHandle(
+        playwright=playwright,
+        context=context,
         profile_dir=profile_dir,
-        process_id=process.pid,
+        config=config,
+        process_id=process_id,
     )
+
+
+def cleanup_browse_chrome_processes(profile_dir: Path) -> dict[str, object]:
+    """SIGTERM (then SIGKILL) any Chrome processes referencing the browse profile."""
+    import signal as _signal
+
+    profile_dir = profile_dir.expanduser().resolve()
+    pids = find_chrome_pids_using_profile(profile_dir)
+    terminated: list[int] = []
+    failed: list[dict[str, object]] = []
+
+    for pid in pids:
+        try:
+            os.kill(pid, _signal.SIGTERM)
+            terminated.append(pid)
+        except ProcessLookupError:
+            continue
+        except PermissionError as exc:
+            failed.append({"pid": pid, "error": str(exc)})
+
+    if terminated:
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            if not find_chrome_pids_using_profile(profile_dir):
+                break
+            time.sleep(0.2)
+
+    remaining = find_chrome_pids_using_profile(profile_dir)
+    for pid in remaining:
+        try:
+            os.kill(pid, _signal.SIGKILL)
+        except ProcessLookupError:
+            continue
+        except PermissionError as exc:
+            failed.append({"pid": pid, "error": str(exc)})
+
+    final = find_chrome_pids_using_profile(profile_dir)
+    return {
+        "profile_dir": str(profile_dir),
+        "terminated_pids": terminated,
+        "remaining_pids": final,
+        "failed": failed,
+    }
 
 
 def connect_over_cdp(

@@ -12,6 +12,7 @@ from browse.browser import (
     BrowseError,
     DEFAULT_PORT,
     DEFAULT_PROFILE_DIR,
+    cleanup_browse_chrome_processes,
     launch_browser,
     profile_dir_status,
     verify_browser_runtime,
@@ -76,6 +77,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--status",
         action="store_true",
         help="Print profile-directory diagnostics instead of launching Chrome",
+    )
+    chrome_parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="Terminate any orphaned Chrome processes using the browse profile and exit",
     )
     chrome_parser.set_defaults(handler=cmd_chrome)
 
@@ -288,19 +294,20 @@ def cmd_chrome(args) -> CommandResult:
     if getattr(args, "status", False):
         info = profile_dir_status(profile_dir)
         return CommandResult(exit_code=0, data={"command": "chrome-status", **info})
+    if getattr(args, "cleanup", False):
+        result = cleanup_browse_chrome_processes(profile_dir)
+        return CommandResult(exit_code=0, data={"command": "chrome-cleanup", **result})
     browser_config = BrowserLaunchConfig(
         port=args.port if args.port is not None else resolved.chrome_port,
         profile_dir=profile_dir,
     )
-    launched = launch_browser(browser_config)
-    return CommandResult(
-        exit_code=0,
-        message=(
-            f"Launched {launched.executable.name} with CDP at {launched.cdp_url}\n"
-            f"Profile: {launched.profile_dir}\n"
-            "Keep this browser window open and sign in there if your app needs authentication."
-        ),
+    sys.stderr.write(
+        f"Launching Chromium with persistent profile at {profile_dir}\n"
+        f"CDP debug port: {browser_config.port}\n"
+        "Keep this terminal open. Close the Chromium window or press Ctrl+C to stop.\n"
     )
+    launch_browser(browser_config)
+    return CommandResult(exit_code=0, message="Chromium closed.")
 
 
 def cmd_session_start(args) -> CommandResult:
