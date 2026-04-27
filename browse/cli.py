@@ -215,17 +215,12 @@ def cmd_help(args) -> CommandResult:
 
 def cmd_install(args) -> CommandResult:
     browser_path = verify_browser_runtime(install_bundled_chromium=args.bundled_chromium)
+    base = "Playwright + Chromium are installed and ready for `browse chrome`."
     if browser_path is None:
-        return CommandResult(
-            exit_code=0,
-            message="Playwright is importable and bundled Chromium was installed as a fallback.",
-        )
+        return CommandResult(exit_code=0, message=base)
     return CommandResult(
         exit_code=0,
-        message=(
-            "Playwright is importable and a system browser is ready for browse.\n"
-            f"Browser: {browser_path}"
-        ),
+        message=f"{base}\nSystem browser also detected (informational, not used): {browser_path}",
     )
 
 

@@ -83,14 +83,23 @@ def resolve_browser_binary() -> Path:
 
 
 def verify_browser_runtime(*, install_bundled_chromium: bool = False) -> Path | None:
+    """Ensure Playwright + Chromium are ready for `browse chrome`.
+
+    Always installs Playwright's bundled Chromium (idempotent) — that's what
+    `browse chrome` launches via `launch_persistent_context`, so we can't rely
+    on the user's installed Chrome.app. The `install_bundled_chromium` flag is
+    kept for back-compat but is now a no-op (Chromium is always installed).
+
+    Returns the path to a system Chrome/Chromium if one is present (purely
+    informational — the system browser isn't used by `browse chrome` anymore).
+    """
+    del install_bundled_chromium
     ensure_playwright_importable()
+    install_playwright_chromium()
     try:
         return resolve_browser_binary()
     except BrowseError:
-        if not install_bundled_chromium:
-            raise
-    install_playwright_chromium()
-    return None
+        return None
 
 
 def build_snapshot_paths(output: str | Path) -> SnapshotArtifactPaths:
@@ -256,6 +265,8 @@ def launch_persistent_context_handle(
                 f"--remote-debugging-port={config.port}",
                 "--no-first-run",
                 "--no-default-browser-check",
+                "--disable-features=ProfilePicker,SigninFlowFollowsUITheme",
+                "--password-store=basic",
             ],
         )
     except Exception as exc:
@@ -264,9 +275,12 @@ def launch_persistent_context_handle(
                 playwright.stop()
             except Exception:
                 pass
+        detail = str(exc).strip() or exc.__class__.__name__
+        hint = ""
+        if "Executable doesn't exist" in detail or "playwright install" in detail.lower():
+            hint = "\nRun `browse install` (or `python -m playwright install chromium`) to download Playwright's Chromium."
         raise BrowseError(
-            "Could not launch Chromium via Playwright. "
-            "Run `browse install` to ensure Playwright's Chromium is downloaded."
+            f"Could not launch Chromium via Playwright: {detail}{hint}"
         ) from exc
 
     if not context.pages:
