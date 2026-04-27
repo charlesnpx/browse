@@ -12,6 +12,7 @@ from browse.browser import (
     connect_over_cdp,
     launch_browser,
     resolve_browser_binary,
+    verify_browser_runtime,
 )
 
 
@@ -54,7 +55,20 @@ class BrowserHelpersTest(unittest.TestCase):
 
         self.assertIn("Run `browse chrome`", str(exc.exception))
 
+    @mock.patch("browse.browser.install_playwright_chromium")
+    @mock.patch("browse.browser.resolve_browser_binary", side_effect=BrowseError("missing"))
+    @mock.patch("browse.browser.ensure_playwright_importable")
+    def test_verify_browser_runtime_can_install_bundled_chromium(
+        self,
+        mock_importable,
+        _mock_resolve,
+        mock_install,
+    ):
+        result = verify_browser_runtime(install_bundled_chromium=True)
+        self.assertIsNone(result)
+        mock_importable.assert_called_once_with()
+        mock_install.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()
-

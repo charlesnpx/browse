@@ -61,14 +61,34 @@ class PreparedPage:
     owns_context: bool
 
 
+def ensure_playwright_importable() -> None:
+    try:
+        __import__("playwright.sync_api")
+    except ImportError as exc:
+        raise BrowseError(
+            "Playwright is not installed in this Python environment. Reinstall `browse` first."
+        ) from exc
+
+
 def resolve_browser_binary() -> Path:
     for candidate in BROWSER_CANDIDATES:
         if candidate.exists():
             return candidate
     raise BrowseError(
         "Could not find Google Chrome or Chromium in standard macOS locations. "
-        "Install Chrome/Chromium in /Applications, then retry `browse chrome`."
+        "Install Chrome/Chromium in /Applications, or run `browse install --bundled-chromium` as a fallback."
     )
+
+
+def verify_browser_runtime(*, install_bundled_chromium: bool = False) -> Path | None:
+    ensure_playwright_importable()
+    try:
+        return resolve_browser_binary()
+    except BrowseError:
+        if not install_bundled_chromium:
+            raise
+    install_playwright_chromium()
+    return None
 
 
 def build_snapshot_paths(output: str | Path) -> SnapshotArtifactPaths:
@@ -232,13 +252,7 @@ def run_snapshot(url: str, output: str | Path, actions: list[tuple[str, object]]
 
 
 def install_playwright_chromium() -> None:
-    try:
-        __import__("playwright")
-    except ImportError as exc:
-        raise BrowseError(
-            "Playwright is not installed in this Python environment. Reinstall `browse` first."
-        ) from exc
-
+    ensure_playwright_importable()
     try:
         subprocess.run(
             [sys.executable, "-m", "playwright", "install", "chromium"],
