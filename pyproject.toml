@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "browse"
-version = "0.3.0"
+version = "0.3.1"
 description = "Playwright-backed browser CLI and installable Claude/Codex skills for UI verification"
 readme = "README.md"
 requires-python = ">=3.11"
