@@ -261,6 +261,7 @@ def launch_persistent_context_handle(
             user_data_dir=str(profile_dir),
             headless=False,
             viewport=DEFAULT_VIEWPORT,
+            ignore_default_args=["--remote-debugging-pipe"],
             args=[
                 f"--remote-debugging-port={config.port}",
                 "--no-first-run",
@@ -474,3 +475,29 @@ def install_playwright_chromium() -> None:
         )
     except subprocess.CalledProcessError as exc:
         raise BrowseError("`playwright install chromium` failed.") from exc
+    if sys.platform == "darwin":
+        _dequarantine_playwright_chromium()
+
+
+def _dequarantine_playwright_chromium() -> None:
+    """Remove macOS Gatekeeper quarantine from Playwright's Chromium binary.
+
+    Without this, the first launch is SIGTRAP-killed by the OS before Playwright
+    can take ownership; the dialog "open or ignore?" appears and even after
+    clicking Reopen, the process is dead and Playwright bails with EPERM. We
+    strip `com.apple.quarantine` recursively from the ms-playwright cache so
+    every Chromium launch is clean.
+    """
+    cache_root = Path.home() / "Library" / "Caches" / "ms-playwright"
+    if not cache_root.exists():
+        return
+    try:
+        subprocess.run(
+            ["xattr", "-dr", "com.apple.quarantine", str(cache_root)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10.0,
+        )
+    except Exception:
+        pass
