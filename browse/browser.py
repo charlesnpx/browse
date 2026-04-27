@@ -117,29 +117,47 @@ def is_port_open(port: int, host: str = DEFAULT_CDP_HOST, timeout: float = 0.25)
 
 
 def find_chrome_pids_using_profile(profile_dir: Path) -> list[int]:
+    """Find all Chrome processes related to the browse profile, including helpers.
+
+    The parent Chrome process carries `--user-data-dir=<path>` in its argv, but
+    its helper / GPU / crashpad child processes do not — they only show their
+    own argv. We match the parent by user-data-dir, then sweep for any process
+    whose binary path lives under the same Playwright Chromium install root
+    (e.g. `~/Library/Caches/ms-playwright/chromium-*/...`). That catches the
+    helpers without dragging in the user's daily Chrome.
+    """
     profile_str = str(profile_dir)
-    try:
-        result = subprocess.run(
-            ["pgrep", "-af", f"user-data-dir={profile_str}"],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=2.0,
-        )
-    except Exception:
-        return []
-    stdout = getattr(result, "stdout", "") or ""
-    pids: list[int] = []
-    for line in stdout.splitlines():
-        parts = line.strip().split(None, 1)
-        if not parts:
-            continue
+    pids: set[int] = set()
+
+    def _run_pgrep(pattern: str) -> list[int]:
         try:
-            pids.append(int(parts[0]))
-        except ValueError:
-            continue
-    return pids
+            result = subprocess.run(
+                ["pgrep", "-af", pattern],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=2.0,
+            )
+        except Exception:
+            return []
+        stdout = getattr(result, "stdout", "") or ""
+        out: list[int] = []
+        for line in stdout.splitlines():
+            parts = line.strip().split(None, 1)
+            if not parts:
+                continue
+            try:
+                out.append(int(parts[0]))
+            except ValueError:
+                continue
+        return out
+
+    pids.update(_run_pgrep(f"user-data-dir={profile_str}"))
+    # Sweep for Playwright-managed Chromium processes (parent + helpers).
+    pids.update(_run_pgrep("ms-playwright/chromium-.*Google Chrome for Testing"))
+    pids.update(_run_pgrep("ms-playwright/chromium-.*chrome_crashpad_handler"))
+    return sorted(pids)
 
 
 def profile_dir_status(profile_dir: Path) -> dict[str, object]:
@@ -258,20 +276,36 @@ def launch_persistent_context_handle(
             ) from exc
         sync_playwright_factory = sync_playwright
 
+    # Allow overriding the Chromium binary. Two escape hatches when Playwright's
+    # bundled Chromium can't run (e.g. unsigned-binary AMFI kills on macOS):
+    #
+    #   BROWSE_CHROME_CHANNEL=chrome  → use installed Google Chrome.app
+    #   BROWSE_CHROME_PATH=/path/to/Chromium  → point at a custom binary
+    #
+    # When neither is set, Playwright launches its own bundled Chromium.
+    channel = os.environ.get("BROWSE_CHROME_CHANNEL") or None
+    executable_path = os.environ.get("BROWSE_CHROME_PATH") or None
+
+    launch_kwargs: dict[str, object] = {
+        "user_data_dir": str(profile_dir),
+        "headless": False,
+        "viewport": DEFAULT_VIEWPORT,
+        "args": [
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-features=ProfilePicker,SigninFlowFollowsUITheme",
+            "--password-store=basic",
+        ],
+    }
+    if channel:
+        launch_kwargs["channel"] = channel
+    if executable_path:
+        launch_kwargs["executable_path"] = executable_path
+
     playwright = None
     try:
         playwright = sync_playwright_factory().start()
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            headless=False,
-            viewport=DEFAULT_VIEWPORT,
-            args=[
-                "--no-first-run",
-                "--no-default-browser-check",
-                "--disable-features=ProfilePicker,SigninFlowFollowsUITheme",
-                "--password-store=basic",
-            ],
-        )
+        context = playwright.chromium.launch_persistent_context(**launch_kwargs)
     except Exception as exc:
         if playwright is not None:
             try:
@@ -529,13 +563,22 @@ def install_playwright_chromium() -> None:
 
 
 def _dequarantine_playwright_chromium() -> None:
-    """Remove macOS Gatekeeper quarantine from Playwright's Chromium binary.
+    """Make Playwright's Chromium runnable on recent macOS.
 
-    Without this, the first launch is SIGTRAP-killed by the OS before Playwright
-    can take ownership; the dialog "open or ignore?" appears and even after
-    clicking Reopen, the process is dead and Playwright bails with EPERM. We
-    strip `com.apple.quarantine` recursively from the ms-playwright cache so
-    every Chromium launch is clean.
+    Two layers of macOS enforcement reject Playwright's downloaded Chromium
+    out of the box:
+
+    1. **Quarantine xattr** — the "downloaded from internet" Gatekeeper warning.
+       Strip `com.apple.quarantine` recursively.
+    2. **AMFI / hardened runtime** — Sonoma+/Sequoia kill unsigned binaries with
+       SIGTRAP before they can fully start (Playwright sees this as `kill EPERM`
+       trying to clean up a process AMFI already killed). Ad-hoc resigning the
+       app bundle (`codesign --force --deep --sign -`) satisfies AMFI without
+       needing an Apple Developer ID.
+
+    Both operations are best-effort. If they fail (xattr/codesign missing, or
+    the user is on Linux), we silently skip — the launch will surface its own
+    error if there's a real problem.
     """
     cache_root = Path.home() / "Library" / "Caches" / "ms-playwright"
     if not cache_root.exists():
@@ -550,3 +593,15 @@ def _dequarantine_playwright_chromium() -> None:
         )
     except Exception:
         pass
+    # Ad-hoc resign every .app bundle Playwright shipped (Chromium + helpers).
+    for app_bundle in cache_root.glob("chromium-*/chrome-mac-*/*.app"):
+        try:
+            subprocess.run(
+                ["codesign", "--force", "--deep", "--sign", "-", str(app_bundle)],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=60.0,
+            )
+        except Exception:
+            pass
