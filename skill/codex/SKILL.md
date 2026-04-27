@@ -10,9 +10,14 @@ Use this skill only for explicit browser verification.
 ## Workflow
 
 1. Identify the exact URL to open, usually a localhost or staging page.
-2. If the visible browser session is missing, instruct the user to run `browse chrome` and sign in there if needed.
-3. Start or reuse the daemon session with `browse session start`.
-4. Use `browse inspect` first. Choose `target_id`s from the semantic JSON output.
+2. Ensure the browser+daemon supervisor is running. `browse chrome` is both the visible browser and the daemon — there is no separate `browse session start`. Check status first; only start if missing:
+   ```bash
+   browse session status || BROWSE_CHROME_CHANNEL=chrome browse chrome --background
+   ```
+   `BROWSE_CHROME_CHANNEL=chrome` is required on macOS — Playwright's bundled Chromium is unsigned and AMFI kills it on launch. `--background` detaches the supervisor and returns once the daemon socket is responsive (or fails fast with a log path).
+
+   If the app needs auth, instruct the user to sign in inside the visible Chrome window after the supervisor starts.
+3. Use `browse inspect` first. Choose `target_id`s from the semantic JSON output.
 5. Prefer short loops: inspect → action → inspect.
 6. Use primitives for clear single-step actions:
    - `browse click <target_id>`
@@ -29,7 +34,9 @@ Use this skill only for explicit browser verification.
 
 ## Notes
 
-- `browse` prefers the user’s installed Chrome/Chromium binary and a dedicated `browse` profile.
+- `browse chrome` (with `BROWSE_CHROME_CHANNEL=chrome`) launches the user's installed Google Chrome.app under Playwright control with a dedicated profile at `~/.browse/chrome-profile`. The same process serves the daemon socket — no separate `session start`.
+- The user's daily Chrome and `browse`'s Chrome use different `--user-data-dir` so they don't interfere.
+- To shut down: `browse session stop` (graceful) or `browse chrome --cleanup` (force-kill any browse-profile Chrome processes).
 - If a composite fails, inspect its trace and drop down to primitives at the failed step.
 - If the configured base URL is missing or outdated, instruct the user to run `browse config`.
 
