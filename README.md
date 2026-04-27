@@ -12,10 +12,16 @@ Version `0.1.0` is intentionally narrow:
 ## Install
 
 ```bash
-pipx install git+ssh://git@github.com/charlesnpx/browse.git
+pipx install git+https://github.com/charlesnpx/browse.git
 ```
 
 or
+
+```bash
+pipx install git+ssh://git@github.com/charlesnpx/browse.git
+```
+
+or, if you've cloned the repo
 
 ```bash
 # from a local checkout
