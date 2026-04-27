@@ -8,6 +8,7 @@ Version `0.1.0` is intentionally narrow:
 - Chromium/Chrome launched in a dedicated profile
 - CDP attachment for all browser work
 - explicit-use Claude/Codex skills
+- saved user config in `~/.browse/config.json`
 
 ## Install
 
@@ -25,7 +26,7 @@ Then run:
 browse init
 ```
 
-`browse init` installs the Playwright Chromium runtime and the bundled Claude/Codex skills. The first browser install downloads Chromium, so it can take a little longer on a clean machine.
+`browse init` installs the Playwright Chromium runtime, the bundled Claude/Codex skills, and a first-run interactive config. The first browser install downloads Chromium, so it can take a little longer on a clean machine.
 
 ## Commands
 
@@ -40,6 +41,20 @@ browse init
 This is idempotent and internally runs:
 - `browse install`
 - `browse install-skills`
+- `browse config` on first run if no saved config exists
+
+### `browse config`
+
+Create or update the saved defaults used by the CLI:
+
+```bash
+browse config
+```
+
+The interactive flow saves `~/.browse/config.json` with:
+- base URL, default `http://localhost:3000`
+- Chrome remote debugging port, default `9222`
+- Chrome profile dir, default `~/.browse/chrome-profile`
 
 ### `browse chrome`
 
@@ -50,8 +65,8 @@ browse chrome
 ```
 
 Defaults:
-- port: `9222`
-- profile dir: `~/.browse/chrome-profile`
+- port: saved config or `9222`
+- profile dir: saved config or `~/.browse/chrome-profile`
 
 Useful flags:
 
@@ -67,16 +82,18 @@ This profile is separate from your normal browser profile so auth/session state 
 Open a page in the running CDP-attached browser:
 
 ```bash
+browse open
 browse open http://localhost:3000
 ```
 
-If CDP is unavailable, `browse` will tell you to run `browse chrome`.
+If no URL is passed, `browse open` uses the configured base URL. If CDP is unavailable, `browse` will tell you to run `browse chrome`.
 
 ### `browse snapshot`
 
 Capture a screenshot and sidecar log from the running browser:
 
 ```bash
+browse snapshot --output /tmp/home.png
 browse snapshot http://localhost:3000 --output /tmp/home.png
 ```
 
@@ -95,7 +112,7 @@ The log captures:
 Wait for an element before capturing:
 
 ```bash
-browse snapshot http://localhost:3000 \
+browse snapshot \
   --output /tmp/dashboard.png \
   --wait-for '[data-testid="dashboard-root"]'
 ```
@@ -103,7 +120,7 @@ browse snapshot http://localhost:3000 \
 Click through UI in order:
 
 ```bash
-browse snapshot http://localhost:3000 \
+browse snapshot \
   --output /tmp/menu.png \
   --click 'button[aria-label="Open menu"]' \
   --wait-for '[role="menu"]'
@@ -123,7 +140,7 @@ browse snapshot http://localhost:3000/login \
 Pause briefly between steps:
 
 ```bash
-browse snapshot http://localhost:3000 \
+browse snapshot \
   --output /tmp/animated.png \
   --click '.open-panel' \
   --sleep-ms 750
@@ -147,6 +164,15 @@ Installed locations:
 
 The skills are explicit-use only. They are meant for cases where the user directly asks for browser verification, screenshots, or invokes the skill by name.
 
+## Config precedence
+
+When `browse` resolves settings, it uses:
+1. explicit CLI args
+2. saved config in `~/.browse/config.json`
+3. built-in defaults
+
+The URL can be omitted for `browse open` and `browse snapshot` once a base URL is configured.
+
 ## Troubleshooting
 
 ### Browser executable missing
@@ -163,6 +189,14 @@ browse chrome
 
 Then sign in or establish the session in that dedicated window before retrying.
 
+### Invalid or missing config
+
+If config is malformed or missing the values you expect, rerun:
+
+```bash
+browse config
+```
+
 ### Login expired
 
 If your app redirects to a login screen or authenticated pages stop loading, re-open the dedicated `browse` browser window and sign in again there:
@@ -170,4 +204,3 @@ If your app redirects to a login screen or authenticated pages stop loading, re-
 ```bash
 browse chrome
 ```
-
