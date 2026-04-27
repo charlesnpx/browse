@@ -1,7 +1,7 @@
 ---
 name: browse
-description: "Open localhost or dev pages in a real browser and capture screenshots plus browser logs for UI verification. Use only when the user explicitly asks for browser verification, screenshots, or invokes this skill directly."
-argument-hint: "<url> [snapshot options]"
+description: "Open localhost or dev pages in a real browser and drive them through short inspect/action loops for UI verification. Use only when the user explicitly asks for browser verification, screenshots, or invokes this skill directly."
+argument-hint: "[url]"
 ---
 
 # /browse
@@ -19,45 +19,44 @@ Do not auto-trigger this skill for ordinary coding or debugging.
 ## Workflow
 
 1. Confirm the target URL.
-   Use a concrete dev-server URL such as `http://localhost:3000`.
+   Use a concrete dev-server URL such as `http://localhost:3000`. If the saved base URL is correct, `browse open` and `browse snapshot` can omit it.
 
-2. Make sure the browser session exists.
-   If CDP is unavailable or the command fails to connect, tell the user to run:
+2. Make sure the visible browser session exists.
+   If the session is not running or CDP is unavailable, have the user run:
    ```bash
    browse chrome
    ```
-   Then ask them to sign in inside that dedicated browser window if the app needs auth.
+   Then have them sign in inside that dedicated browser window if the app needs auth.
 
-3. If the configured base URL is missing or wrong, have the user run:
+3. Start or reuse the daemon session:
    ```bash
-   browse config
+   browse session start
    ```
 
-4. Use `browse open` for manual inspection when needed:
+4. Always work in short observe/act loops:
    ```bash
-   browse open
+   browse inspect
+   browse click <target_id>
+   browse inspect
    ```
 
-5. Use `browse snapshot` for verification after UI changes instead of claiming visual success without checking:
+5. Prefer composites for hostile widgets:
    ```bash
-   browse snapshot --output /tmp/page.png
+   browse choose <target_id> "Completed"
+   browse pick-date <target_id> 2026-04-30
+   browse submit
    ```
 
-6. For interactive flows, apply ordered actions exactly as needed:
-   ```bash
-   browse snapshot http://localhost:3000/login \
-     --output /tmp/login.png \
-     --fill 'input[name="email"]' 'dev@example.com' \
-     --fill 'input[name="password"]' 'secret' \
-     --click 'button[type="submit"]' \
-     --wait-for '[data-testid="home"]'
-   ```
+6. Use `--if-version` when the page may have changed between observation and action.
 
-7. Inspect both outputs before summarizing:
-   - the PNG screenshot
-   - the adjacent `.log` file with console errors, page errors, and failed requests
+7. Use `browse screenshot --output /tmp/page.png` or `browse snapshot --output /tmp/page.png` before summarizing results.
+
+8. Inspect both outputs before reporting:
+   - the JSON command responses
+   - the screenshot file if one was written
 
 ## Notes
 
-- `browse` uses a dedicated browser profile for session continuity.
-- If login expires, have the user re-open the `browse` browser window and sign in again there.
+- `browse` uses your installed Chrome/Chromium binary, but keeps auth in a dedicated `browse` profile by default.
+- If login expires, have the user reopen the `browse` browser window and sign in again there.
+- If a composite fails, read its trace (`steps_executed`, `failed_at`, `scope_at_failure`, `inspect_snapshot`) and fall back to primitives.

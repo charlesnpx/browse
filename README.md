@@ -1,14 +1,14 @@
 # browse
 
-`browse` is a small Playwright-backed CLI for opening dev pages in a real browser, keeping a dedicated signed-in session alive, and capturing screenshots plus browser logs for UI verification.
+`browse` is a Playwright-backed CLI for real-browser UI verification. It attaches to a visible Chrome/Chromium session over CDP, keeps auth in a dedicated persistent profile, and now supports daemon-backed inspect/act loops for complex forms.
 
-Version `0.1.0` is intentionally narrow:
+Version `0.2.0` centers on:
 - Python 3.11+
-- `argparse`
-- Chromium/Chrome launched in a dedicated profile
-- CDP attachment for all browser work
+- Playwright as the automation library
+- your installed Chrome/Chromium binary as the browser engine
+- a dedicated `browse` profile for auth/session continuity
+- a long-lived session daemon with JSON-first action commands
 - explicit-use Claude/Codex skills
-- saved user config in `~/.browse/config.json`
 
 ## Install
 
@@ -16,17 +16,10 @@ Version `0.1.0` is intentionally narrow:
 pipx install git+https://github.com/charlesnpx/browse.git
 ```
 
-or
+or from a local checkout:
 
 ```bash
-pipx install git+ssh://git@github.com/charlesnpx/browse.git
-```
-
-or, if you've cloned the repo
-
-```bash
-# from a local checkout
-pipx install ~/browse
+pipx install ~/WebstormProjects/browse
 ```
 
 Then run:
@@ -35,125 +28,126 @@ Then run:
 browse init
 ```
 
-`browse init` installs the Playwright Chromium runtime, the bundled Claude/Codex skills, and a first-run interactive config. The first browser install downloads Chromium, so it can take a little longer on a clean machine.
+`browse init`:
+- verifies Playwright importability
+- verifies a system Chrome/Chromium binary is discoverable
+- installs bundled Claude/Codex skills
+- runs first-time interactive config if needed
 
-## Commands
-
-### `browse init`
-
-Recommended first-run setup:
-
-```bash
-browse init
-```
-
-This is idempotent and internally runs:
-- `browse install`
-- `browse install-skills`
-- `browse config` on first run if no saved config exists
-
-### `browse config`
-
-Create or update the saved defaults used by the CLI:
+By default, `browse` does **not** install Playwright's bundled Chromium. If you do not have Chrome/Chromium installed in a standard location, use the explicit fallback:
 
 ```bash
-browse config
+browse install --bundled-chromium
 ```
 
-The interactive flow saves `~/.browse/config.json` with:
-- base URL, default `http://localhost:3000`
-- Chrome remote debugging port, default `9222`
-- Chrome profile dir, default `~/.browse/chrome-profile`
+## Recommended workflow
 
-### `browse chrome`
-
-Launch a visible Chrome/Chromium window with remote debugging enabled and a dedicated profile:
+1. Launch the dedicated browser session:
 
 ```bash
 browse chrome
 ```
 
-Defaults:
-- port: saved config or `9222`
-- profile dir: saved config or `~/.browse/chrome-profile`
+2. Sign in there if your app requires authentication.
 
-Useful flags:
+3. Start or reuse the daemon session:
 
 ```bash
-browse chrome --port 9333
-browse chrome --profile-dir ~/tmp/browse-profile
+browse session start
 ```
 
-This profile is separate from your normal browser profile so auth/session state persists for automation without touching your personal Chrome data.
+4. Drive the page in short observe/act loops:
 
-### `browse open`
+```bash
+browse inspect
+browse click <target_id>
+browse inspect
+browse choose <target_id> "Completed"
+browse pick-date <target_id> 2026-04-30
+browse submit
+browse screenshot --output /tmp/final.png
+```
 
-Open a page in the running CDP-attached browser:
+The new daemon-backed commands emit JSON by default so agents can parse them reliably.
+
+## Commands
+
+### Bootstrap
+
+```bash
+browse init
+browse config
+browse chrome
+browse session start
+browse session status
+browse session stop
+```
+
+Saved config lives at `~/.browse/config.json` and stores:
+- `base_url`
+- `chrome_port`
+- `chrome_profile_dir`
+
+### Inspect and act
+
+```bash
+browse inspect
+browse pages
+browse select-page page-2
+browse click <target_id>
+browse type <target_id> "hello"
+browse press Enter
+browse wait --target <target_id>
+browse wait --url-contains /review
+browse wait --milliseconds 500
+browse choose <target_id> "Application X"
+browse pick-date <target_id> 2026-04-30
+browse submit
+browse console --limit 25
+browse url
+browse back
+browse screenshot --output /tmp/page.png
+```
+
+### Convenience wrappers
+
+These now run through the same daemon/session model:
 
 ```bash
 browse open
-browse open http://localhost:3000
+browse open http://localhost:3000/app/investment-management/amots/87
+browse snapshot --output /tmp/page.png
+browse snapshot http://localhost:3000/app/investment-management/amots/87 --output /tmp/page.png
 ```
 
-If no URL is passed, `browse open` uses the configured base URL. If CDP is unavailable, `browse` will tell you to run `browse chrome`.
+## Output contract
 
-### `browse snapshot`
+Daemon-backed commands return JSON with fields like:
+- `ok`
+- `command`
+- `page_id`
+- `state_version`
+- command-specific payload
 
-Capture a screenshot and sidecar log from the running browser:
+`browse inspect` returns grouped actionable nodes, each with a `target_id` plus semantic metadata such as role, accessible name, and state.
+
+Mutating commands accept `--if-version <n>` to guard against stale UI state:
 
 ```bash
-browse snapshot --output /tmp/home.png
-browse snapshot http://localhost:3000 --output /tmp/home.png
+browse inspect
+browse click target-123 --if-version 4
 ```
 
-Outputs:
-- `/tmp/home.png`
-- `/tmp/home.png.log`
+If the human changes the page in the meantime, the daemon returns a structured stale-state error instead of acting on an old assumption.
 
-The log captures:
-- console messages
-- page errors
-- failed network requests
-- action steps and failures
+## Complex widget support
 
-### Action examples
+`browse` v0.2 includes a small composite layer for hostile UI widgets:
+- `choose` for combobox/autocomplete flows
+- `pick-date` for date fields and pickers
+- `submit` for primary dialog/page actions
 
-Wait for an element before capturing:
-
-```bash
-browse snapshot \
-  --output /tmp/dashboard.png \
-  --wait-for '[data-testid="dashboard-root"]'
-```
-
-Click through UI in order:
-
-```bash
-browse snapshot \
-  --output /tmp/menu.png \
-  --click 'button[aria-label="Open menu"]' \
-  --wait-for '[role="menu"]'
-```
-
-Fill a form, click submit, then wait:
-
-```bash
-browse snapshot http://localhost:3000/login \
-  --output /tmp/login.png \
-  --fill 'input[name="email"]' 'dev@example.com' \
-  --fill 'input[name="password"]' 'secret' \
-  --click 'button[type="submit"]' \
-  --wait-for '[data-testid="account-home"]'
-```
-
-Pause briefly between steps:
-
-```bash
-browse snapshot \
-  --output /tmp/animated.png \
-  --click '.open-panel' \
-  --sleep-ms 750
-```
+Composite failures are transparent: the JSON response includes the executed steps, the failure point, the active scope, and an inspect snapshot so the agent can recover with primitives.
 
 ## Skills
 
@@ -164,43 +158,37 @@ browse install-skills
 ```
 
 Installed locations:
+- Claude: `~/.claude/skills/browse/SKILL.md`
+- Codex: `~/.codex/skills/browse/`
 
-### Claude
-- `~/.claude/skills/browse/SKILL.md`
-
-### Codex
-- `~/.codex/skills/browse/`
-
-The skills are explicit-use only. They are meant for cases where the user directly asks for browser verification, screenshots, or invokes the skill by name.
-
-## Config precedence
-
-When `browse` resolves settings, it uses:
-1. explicit CLI args
-2. saved config in `~/.browse/config.json`
-3. built-in defaults
-
-The URL can be omitted for `browse open` and `browse snapshot` once a base URL is configured.
+The skills are explicit-use only. They are for direct browser verification requests, not general coding.
 
 ## Troubleshooting
 
 ### Browser executable missing
 
-If `browse chrome` says it cannot find a supported browser binary, install Google Chrome or Chromium in a standard macOS location such as `/Applications`.
+Install Google Chrome or Chromium in a standard macOS location such as `/Applications`, then rerun:
+
+```bash
+browse install
+```
+
+Or use the fallback:
+
+```bash
+browse install --bundled-chromium
+```
 
 ### CDP connection refused
 
-If `browse open` or `browse snapshot` cannot connect, start a browser session first:
+If the daemon cannot connect, start the browser first:
 
 ```bash
 browse chrome
+browse session start
 ```
 
-Then sign in or establish the session in that dedicated window before retrying.
-
 ### Invalid or missing config
-
-If config is malformed or missing the values you expect, rerun:
 
 ```bash
 browse config
@@ -208,8 +196,17 @@ browse config
 
 ### Login expired
 
-If your app redirects to a login screen or authenticated pages stop loading, re-open the dedicated `browse` browser window and sign in again there:
+Re-open the dedicated `browse` browser window and sign in again there:
 
 ```bash
 browse chrome
+```
+
+### Chrome restarted
+
+A daemon session does not survive Chrome restart. Start Chrome again, then restart the daemon session:
+
+```bash
+browse chrome
+browse session start
 ```

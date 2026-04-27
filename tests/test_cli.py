@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -15,55 +16,32 @@ class CliParsingTest(unittest.TestCase):
         args = parser.parse_args(["open"])
         self.assertIsNone(args.url)
 
-    def test_snapshot_preserves_ordered_actions(self):
-        parser = cli.build_parser()
-        args = parser.parse_args(
-            [
-                "snapshot",
-                "http://localhost:3000",
-                "--output",
-                "/tmp/page.png",
-                "--fill",
-                "#email",
-                "dev@example.com",
-                "--click",
-                "button[type=submit]",
-                "--wait-for",
-                "#home",
-                "--sleep-ms",
-                "500",
-            ]
-        )
-
-        self.assertEqual(args.url, "http://localhost:3000")
-        self.assertEqual(
-            args.actions,
-            [
-                ("fill", ("#email", "dev@example.com")),
-                ("click", "button[type=submit]"),
-                ("wait-for", "#home"),
-                ("sleep-ms", 500),
-            ],
-        )
-
     def test_snapshot_allows_omitting_url(self):
         parser = cli.build_parser()
         args = parser.parse_args(["snapshot", "--output", "/tmp/page.png"])
         self.assertIsNone(args.url)
 
+    def test_new_daemon_commands_parse(self):
+        parser = cli.build_parser()
+        args = parser.parse_args(["choose", "target-1", "Completed", "--if-version", "4"])
+        self.assertEqual(args.target_id, "target-1")
+        self.assertEqual(args.text, "Completed")
+        self.assertEqual(args.if_version, 4)
+
     @mock.patch("browse.cli.save_config")
     @mock.patch("browse.cli.prompt_for_config")
     @mock.patch("browse.cli.config_exists", return_value=False)
     @mock.patch("browse.cli.install_skills", return_value=["Codex skill       -> /tmp/skill"])
-    @mock.patch("browse.cli.install_playwright_chromium")
+    @mock.patch("browse.cli.verify_browser_runtime")
     def test_init_orchestrates_install_skill_install_and_first_run_config(
         self,
-        mock_install,
+        mock_verify_runtime,
         mock_install_skills,
         _mock_config_exists,
         mock_prompt_for_config,
         mock_save_config,
     ):
+        mock_verify_runtime.return_value = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
         mock_prompt_for_config.return_value = cli.BrowseConfig(
             base_url="http://localhost:4000",
             chrome_port=9555,
@@ -71,37 +49,38 @@ class CliParsingTest(unittest.TestCase):
         )
         mock_save_config.return_value = Path("/tmp/config.json")
 
-        result = cli.cmd_init(None)
+        result = cli.cmd_init(mock.Mock(bundled_chromium=False))
 
-        mock_install.assert_called_once_with()
+        mock_verify_runtime.assert_called_once_with(install_bundled_chromium=False)
         mock_install_skills.assert_called_once_with()
         mock_prompt_for_config.assert_called_once_with(None)
         mock_save_config.assert_called_once()
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("Ready to use:", result.message)
+        self.assertIn("browse session start", result.message)
+        self.assertIn("browse inspect", result.message)
         self.assertIn("browse open http://localhost:4000", result.message)
-        self.assertIn("browse snapshot --output /tmp/page.png", result.message)
 
     @mock.patch("browse.cli.load_config")
     @mock.patch("browse.cli.config_exists", return_value=True)
     @mock.patch("browse.cli.install_skills", return_value=["Codex skill       -> /tmp/skill"])
-    @mock.patch("browse.cli.install_playwright_chromium")
+    @mock.patch("browse.cli.verify_browser_runtime")
     def test_init_skips_prompt_when_config_exists(
         self,
-        mock_install,
+        mock_verify_runtime,
         mock_install_skills,
         _mock_config_exists,
         mock_load_config,
     ):
+        mock_verify_runtime.return_value = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
         mock_load_config.return_value = cli.BrowseConfig(
             base_url="http://localhost:3000",
             chrome_port=9222,
             chrome_profile_dir=Path("/tmp/profile"),
         )
 
-        result = cli.cmd_init(None)
+        result = cli.cmd_init(mock.Mock(bundled_chromium=False))
 
-        mock_install.assert_called_once_with()
+        mock_verify_runtime.assert_called_once_with(install_bundled_chromium=False)
         mock_install_skills.assert_called_once_with()
         mock_load_config.assert_called_once_with()
         self.assertIn("Config already exists. Run `browse config` to update it.", result.message)
@@ -142,68 +121,77 @@ class CliParsingTest(unittest.TestCase):
         mock_save_config.assert_called_once_with(updated)
         self.assertIn("Saved browse config: /tmp/config.json", result.message)
 
+    @mock.patch("browse.cli.send_request")
+    @mock.patch("browse.cli.ensure_daemon_running")
     @mock.patch("browse.cli.load_config")
-    def test_open_uses_configured_url_and_port(self, mock_load_config):
+    def test_open_uses_configured_url_and_port(self, mock_load_config, mock_ensure_daemon_running, mock_send_request):
         mock_load_config.return_value = cli.BrowseConfig(
             base_url="http://localhost:4000",
             chrome_port=9444,
             chrome_profile_dir=Path("/tmp/profile"),
         )
-        with mock.patch("browse.cli.open_page", return_value="http://localhost:4000") as mock_open_page:
-            result = cli.cmd_open(mock.Mock(url=None, port=None))
+        mock_send_request.return_value = {"ok": True, "command": "open", "url": "http://localhost:4000"}
 
-        mock_open_page.assert_called_once_with("http://localhost:4000", 9444)
-        self.assertIn("Opened http://localhost:4000", result.message)
+        result = cli.cmd_open(mock.Mock(url=None, port=None, if_version=None))
 
+        mock_ensure_daemon_running.assert_called_once_with(9444)
+        mock_send_request.assert_called_once_with(9444, "open", {"url": "http://localhost:4000", "if_version": None})
+        self.assertEqual(result.data["command"], "open")
+
+    @mock.patch("browse.cli.send_request")
+    @mock.patch("browse.cli.ensure_daemon_running")
     @mock.patch("browse.cli.load_config")
-    def test_snapshot_cli_args_override_saved_config(self, mock_load_config):
+    def test_snapshot_navigates_then_screenshots(self, mock_load_config, mock_ensure_daemon_running, mock_send_request):
         mock_load_config.return_value = cli.BrowseConfig(
             base_url="http://localhost:4000",
             chrome_port=9444,
             chrome_profile_dir=Path("/tmp/profile"),
         )
-        with mock.patch("browse.cli.run_snapshot") as mock_run_snapshot:
-            mock_run_snapshot.return_value = mock.Mock(
-                screenshot_path="/tmp/page.png",
-                log_path="/tmp/page.png.log",
-            )
-            cli.cmd_snapshot(
-                mock.Mock(
-                    url="http://localhost:5000",
-                    output="/tmp/page.png",
-                    actions=[],
-                    port=9666,
-                    full_page=True,
-                )
-            )
+        mock_send_request.side_effect = [
+            {"ok": True, "command": "open", "page_id": "page-1"},
+            {"ok": True, "command": "screenshot", "output": "/tmp/page.png"},
+        ]
 
-        mock_run_snapshot.assert_called_once_with("http://localhost:5000", "/tmp/page.png", [], 9666, True)
+        result = cli.cmd_snapshot(
+            mock.Mock(
+                url="http://localhost:5000",
+                output="/tmp/page.png",
+                port=9666,
+                full_page=True,
+                if_version=7,
+            )
+        )
 
-    @mock.patch("browse.cli.run_snapshot")
+        self.assertEqual(result.data["command"], "screenshot")
+        self.assertEqual(
+            mock_send_request.call_args_list,
+            [
+                mock.call(9666, "open", {"url": "http://localhost:5000", "if_version": 7}),
+                mock.call(9666, "screenshot", {"output": "/tmp/page.png", "full_page": True, "if_version": None}),
+            ],
+        )
+        self.assertEqual(mock_ensure_daemon_running.call_count, 2)
+
+    @mock.patch("browse.cli.send_request", return_value={"ok": True, "command": "status", "pid": 1})
+    @mock.patch("browse.cli.ensure_daemon_running", return_value={"ok": True, "command": "status", "pid": 1})
     @mock.patch("browse.cli.load_config")
-    def test_snapshot_command_reports_output_paths(self, mock_load_config, mock_run_snapshot):
+    def test_main_prints_json_for_daemon_commands(self, mock_load_config, _mock_ensure_daemon_running, _mock_send_request):
         mock_load_config.return_value = cli.BrowseConfig(
             base_url="http://localhost:3000",
             chrome_port=9222,
             chrome_profile_dir=Path("/tmp/profile"),
         )
-        mock_run_snapshot.return_value = mock.Mock(
-            screenshot_path="/tmp/page.png",
-            log_path="/tmp/page.png.log",
-        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
 
-        result = cli.cmd_snapshot(
-            mock.Mock(
-                url=None,
-                output="/tmp/page.png",
-                actions=[],
-                port=None,
-                full_page=True,
-            )
-        )
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            exit_code = cli.main(["session", "status"])
 
-        self.assertIn("/tmp/page.png", result.message)
-        self.assertIn("/tmp/page.png.log", result.message)
+        self.assertEqual(exit_code, 0)
+        parsed = json.loads(stdout.getvalue())
+        self.assertEqual(parsed["command"], "status")
+        self.assertEqual(parsed["pid"], 1)
+        self.assertEqual(stderr.getvalue(), "")
 
     @mock.patch("browse.cli.cmd_open", side_effect=cli.BrowseError("Run `browse chrome` first."))
     def test_main_returns_nonzero_for_user_facing_errors(self, _mock_cmd_open):
