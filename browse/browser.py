@@ -290,6 +290,12 @@ def launch_persistent_context_handle(
         "user_data_dir": str(profile_dir),
         "headless": False,
         "viewport": DEFAULT_VIEWPORT,
+        # Strip Playwright defaults that break persistent state:
+        # --use-mock-keychain: in-memory macOS keychain → cookie encryption keys
+        #   don't persist across launches, so next launch can't decrypt cookies.
+        # --enable-automation: marks the session as automated, which some sites
+        #   (and some Chrome features) treat as ephemeral.
+        "ignore_default_args": ["--use-mock-keychain", "--enable-automation"],
         "args": [
             "--no-first-run",
             "--no-default-browser-check",
