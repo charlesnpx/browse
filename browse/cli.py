@@ -13,8 +13,8 @@ from browse.browser import (
     DEFAULT_PORT,
     DEFAULT_PROFILE_DIR,
     cleanup_browse_chrome_processes,
-    launch_browser,
     profile_dir_status,
+    run_chrome_supervisor,
     verify_browser_runtime,
 )
 from browse.config import (
@@ -298,10 +298,11 @@ def cmd_chrome(args) -> CommandResult:
     )
     sys.stderr.write(
         f"Launching Chromium with persistent profile at {profile_dir}\n"
-        f"CDP debug port: {browser_config.port}\n"
+        f"Daemon socket: {browser_config.cdp_url} (use other terminals: "
+        "browse inspect, browse click, etc.)\n"
         "Keep this terminal open. Close the Chromium window or press Ctrl+C to stop.\n"
     )
-    launch_browser(browser_config)
+    run_chrome_supervisor(browser_config)
     return CommandResult(exit_code=0, message="Chromium closed.")
 
 

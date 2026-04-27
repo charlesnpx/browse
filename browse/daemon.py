@@ -484,12 +484,20 @@ class ManagedPage:
 
 
 class BrowseDaemon:
-    def __init__(self, port: int, idle_timeout_seconds: int = DEFAULT_IDLE_TIMEOUT_SECONDS):
+    def __init__(
+        self,
+        port: int,
+        idle_timeout_seconds: int = DEFAULT_IDLE_TIMEOUT_SECONDS,
+        *,
+        attached_manager: object | None = None,
+        attached_browser: object | None = None,
+    ):
         self.port = port
         self.idle_timeout_seconds = idle_timeout_seconds
         self.socket_path = session_socket_path(port)
-        self.manager = None
-        self.browser = None
+        self.manager = attached_manager
+        self.browser = attached_browser
+        self._owns_attachment = attached_browser is None
         self.pages: dict[int, ManagedPage] = {}
         self.selected_page_id: str | None = None
         self.target_registry: dict[tuple[str, str], LocatorRecipe] = {}
@@ -501,7 +509,8 @@ class BrowseDaemon:
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
         if self.socket_path.exists():
             self.socket_path.unlink()
-        self.manager, self.browser = connect_over_cdp(self.port)
+        if self.browser is None:
+            self.manager, self.browser = connect_over_cdp(self.port)
         self.refresh_pages(auto_select=True)
 
     def close(self) -> None:

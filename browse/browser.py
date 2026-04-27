@@ -163,28 +163,6 @@ def profile_dir_status(profile_dir: Path) -> dict[str, object]:
     return info
 
 
-def launch_browser(config: BrowserLaunchConfig) -> BrowserLaunchResult:
-    """Launch Chromium via Playwright's persistent context and block until it closes.
-
-    Returns a `BrowserLaunchResult` only after the browser has exited cleanly. Use
-    `launch_persistent_context_handle` if you need non-blocking access to the
-    context object (e.g. tests).
-    """
-    handle = launch_persistent_context_handle(config)
-    try:
-        handle.wait_until_closed()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        handle.close()
-    return BrowserLaunchResult(
-        executable=Path("chromium"),
-        port=config.port,
-        profile_dir=handle.profile_dir,
-        process_id=handle.process_id,
-    )
-
-
 @dataclass
 class _PersistentContextHandle:
     playwright: object
@@ -193,6 +171,13 @@ class _PersistentContextHandle:
     config: BrowserLaunchConfig
     process_id: int | None = None
     _closed: bool = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+        return False
 
     def wait_until_closed(self) -> None:
         closed_event = {"flag": False}
@@ -229,6 +214,25 @@ class _PersistentContextHandle:
             pass
 
 
+class _PersistentBrowserAdapter:
+    """Adapter so BrowseDaemon can iterate `.contexts` on a persistent context.
+
+    Playwright's persistent context has no parent Browser. The daemon expects
+    `browser.contexts` (list). This adapter satisfies that interface.
+    """
+
+    def __init__(self, context: object):
+        self._context = context
+
+    @property
+    def contexts(self) -> list[object]:
+        try:
+            _ = self._context.pages  # raises if context is closed
+            return [self._context]
+        except Exception:
+            return []
+
+
 def launch_persistent_context_handle(
     config: BrowserLaunchConfig,
     *,
@@ -261,9 +265,7 @@ def launch_persistent_context_handle(
             user_data_dir=str(profile_dir),
             headless=False,
             viewport=DEFAULT_VIEWPORT,
-            ignore_default_args=["--remote-debugging-pipe"],
             args=[
-                f"--remote-debugging-port={config.port}",
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-features=ProfilePicker,SigninFlowFollowsUITheme",
@@ -305,6 +307,53 @@ def launch_persistent_context_handle(
         config=config,
         process_id=process_id,
     )
+
+
+def run_chrome_supervisor(config: BrowserLaunchConfig) -> None:
+    """Launch Chromium via persistent context AND serve the daemon socket.
+
+    This is the entry point for `browse chrome`. It owns Chromium for its
+    entire lifetime and runs the daemon in-process, driving the persistent
+    context through Playwright's API directly (no CDP attach across
+    processes). Blocks until Chromium closes or the user interrupts.
+    """
+    from browse.daemon import (
+        BrowseDaemon,
+        BrowseDaemonServer,
+        DEFAULT_IDLE_TIMEOUT_SECONDS,
+    )
+
+    handle = launch_persistent_context_handle(config)
+    adapter = _PersistentBrowserAdapter(handle.context)
+
+    daemon = BrowseDaemon(
+        port=config.port,
+        idle_timeout_seconds=10**9,  # supervisor controls lifetime, not idle
+        attached_manager=handle,
+        attached_browser=adapter,
+    )
+
+    closed_event = {"flag": False}
+
+    def _on_context_close(_ctx) -> None:
+        closed_event["flag"] = True
+        daemon.should_stop = True
+
+    try:
+        handle.context.on("close", _on_context_close)
+    except Exception:
+        pass
+
+    server = BrowseDaemonServer(daemon)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            handle.close()
+        except Exception:
+            pass
 
 
 def cleanup_browse_chrome_processes(profile_dir: Path) -> dict[str, object]:
