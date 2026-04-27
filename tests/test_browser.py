@@ -32,7 +32,7 @@ class BrowserHelpersTest(unittest.TestCase):
         self.assertIn("Could not find Google Chrome or Chromium", str(exc.exception))
 
     @mock.patch("browse.browser.find_chrome_pids_using_profile", return_value=[])
-    def test_launch_persistent_context_uses_user_data_dir_and_remote_debugging_port(self, _mock_pids):
+    def test_launch_persistent_context_uses_user_data_dir_and_pipe_transport(self, _mock_pids):
         fake_context = mock.Mock()
         fake_context.pages = []
         fake_chromium = mock.Mock()
@@ -51,7 +51,9 @@ class BrowserHelpersTest(unittest.TestCase):
         kwargs = fake_chromium.launch_persistent_context.call_args.kwargs
         self.assertEqual(kwargs["user_data_dir"], str(profile_dir.resolve()))
         self.assertFalse(kwargs["headless"])
-        self.assertIn("--remote-debugging-port=9333", kwargs["args"])
+        # No --remote-debugging-port: Playwright drives via its default pipe transport;
+        # the daemon attaches in-process via the persistent context, not via CDP TCP.
+        self.assertFalse(any("remote-debugging-port" in arg for arg in kwargs["args"]))
         fake_context.new_page.assert_called_once_with()
         self.assertIs(handle.context, fake_context)
 
