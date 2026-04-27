@@ -22,44 +22,45 @@ Do not auto-trigger this skill for ordinary coding or debugging.
    Use a concrete dev-server URL such as `http://localhost:3000`. If the saved base URL is correct, `browse open` and `browse snapshot` can omit it.
 
 2. Make sure the visible browser session exists.
-   If the session is not running or CDP is unavailable, have the user run:
+   `browse chrome` is both the visible browser AND the daemon — there's no separate `browse session start` step. If the daemon isn't running, start it detached:
    ```bash
-   browse chrome
+   BROWSE_CHROME_CHANNEL=chrome browse chrome --background
    ```
-   Then have them sign in inside that dedicated browser window if the app needs auth.
+   This launches the user's installed Google Chrome.app under Playwright's control, opens a window, and serves the daemon socket — all in one detached background process. `--background` returns once the daemon is responsive (or fails fast with a log path on error).
 
-3. Start or reuse the daemon session:
-   ```bash
-   browse session start
-   ```
+   `BROWSE_CHROME_CHANNEL=chrome` uses the user's installed Chrome.app, which is required on recent macOS — Playwright's bundled Chromium is unsigned and AMFI kills it with SIGTRAP before launch.
 
-4. Always work in short observe/act loops:
+   To check if a session is already up: `browse session status` (returns ok if a supervisor is running, error otherwise). Don't relaunch if it's already up — the same profile dir can't be opened twice. If auth is needed, have the user open the visible window and sign in there once.
+
+3. Always work in short observe/act loops:
    ```bash
    browse inspect
    browse click <target_id>
    browse inspect
    ```
 
-5. Prefer composites for hostile widgets:
+4. Prefer composites for hostile widgets:
    ```bash
    browse choose <target_id> "Completed"
    browse pick-date <target_id> 2026-04-30
    browse submit
    ```
 
-6. Use `--if-version` when the page may have changed between observation and action.
+5. Use `--if-version` when the page may have changed between observation and action.
 
-7. Use `browse screenshot --output /tmp/page.png` or `browse snapshot --output /tmp/page.png` before summarizing results.
+6. Use `browse screenshot --output /tmp/page.png` or `browse snapshot --output /tmp/page.png` before summarizing results.
 
-8. Inspect both outputs before reporting:
+7. Inspect both outputs before reporting:
    - the JSON command responses
    - the screenshot file if one was written
 
 ## Notes
 
-- `browse` uses your installed Chrome/Chromium binary, but keeps auth in a dedicated `browse` profile by default.
-- If login expires, have the user reopen the `browse` browser window and sign in again there.
+- `browse chrome` launches the user's installed Google Chrome.app (when `BROWSE_CHROME_CHANNEL=chrome`) under Playwright's control with a dedicated profile at `~/.browse/chrome-profile`. Same process serves the daemon socket — no separate `session start` needed.
+- The user's daily Chrome and `browse`'s Chrome use different `--user-data-dir` so they don't interfere.
+- If login expires, have the user open the visible Chrome window and sign in again. Auth state lives in the dedicated profile dir and persists across `browse chrome` restarts (for cookies/localStorage that aren't session-only).
 - If a composite fails, read its trace (`steps_executed`, `failed_at`, `scope_at_failure`, `inspect_snapshot`) and fall back to primitives.
+- To shut down: `browse session stop` (graceful — closes Chrome and exits the supervisor) or `browse chrome --cleanup` (force-kills any browse-profile Chrome processes).
 
 ## Native MUI Select fallback
 

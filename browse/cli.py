@@ -83,6 +83,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Terminate any orphaned Chrome processes using the browse profile and exit",
     )
+    chrome_parser.add_argument(
+        "--background",
+        action="store_true",
+        help="Detach: spawn the Chromium+daemon supervisor in the background and return",
+    )
     chrome_parser.set_defaults(handler=cmd_chrome)
 
     session_parser = subparsers.add_parser("session", help="Manage the long-lived browse daemon session")
@@ -296,6 +301,8 @@ def cmd_chrome(args) -> CommandResult:
         port=args.port if args.port is not None else resolved.chrome_port,
         profile_dir=profile_dir,
     )
+    if getattr(args, "background", False):
+        return _spawn_chrome_supervisor_detached(browser_config)
     sys.stderr.write(
         f"Launching Chromium with persistent profile at {profile_dir}\n"
         f"Daemon socket: {browser_config.cdp_url} (use other terminals: "
@@ -304,6 +311,82 @@ def cmd_chrome(args) -> CommandResult:
     )
     run_chrome_supervisor(browser_config)
     return CommandResult(exit_code=0, message="Chromium closed.")
+
+
+def _spawn_chrome_supervisor_detached(config: BrowserLaunchConfig) -> CommandResult:
+    """Spawn `browse chrome` (foreground supervisor) as a detached child process.
+
+    Polls the daemon socket to confirm startup before returning. If a daemon is
+    already running on this port, no new supervisor is spawned — that's already
+    a healthy state.
+    """
+    import os
+    import subprocess
+    import time
+
+    from browse.protocol import send_request, DaemonClientError
+
+    # Already running?
+    try:
+        send_request(config.port, "status", {}, timeout=2.0)
+        return CommandResult(
+            exit_code=0,
+            data={
+                "command": "chrome-background",
+                "status": "already-running",
+                "port": config.port,
+            },
+        )
+    except DaemonClientError:
+        pass
+
+    log_path = config.profile_dir.expanduser() / "supervisor.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_file = open(log_path, "ab")
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "browse.cli",
+            "chrome",
+            "--port",
+            str(config.port),
+            "--profile-dir",
+            str(config.profile_dir),
+        ],
+        stdout=log_file,
+        stderr=log_file,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+        env=os.environ.copy(),
+    )
+    log_file.close()
+
+    deadline = time.time() + 30.0
+    while time.time() < deadline:
+        try:
+            send_request(config.port, "status", {}, timeout=2.0)
+            return CommandResult(
+                exit_code=0,
+                data={
+                    "command": "chrome-background",
+                    "status": "started",
+                    "port": config.port,
+                    "pid": process.pid,
+                    "log": str(log_path),
+                },
+            )
+        except DaemonClientError:
+            if process.poll() is not None:
+                raise BrowseError(
+                    f"Background `browse chrome` exited with code {process.returncode}. "
+                    f"See {log_path} for details."
+                )
+            time.sleep(0.5)
+    raise BrowseError(
+        f"Background `browse chrome` did not respond on port {config.port} within 30s. "
+        f"See {log_path} for details."
+    )
 
 
 def cmd_session_start(args) -> CommandResult:
