@@ -28,6 +28,36 @@ class CliParsingTest(unittest.TestCase):
         self.assertEqual(args.text, "Completed")
         self.assertEqual(args.if_version, 4)
 
+    @mock.patch("browse.cli.send_request")
+    @mock.patch("browse.cli.ensure_daemon_running")
+    @mock.patch("browse.cli.load_config")
+    def test_inspect_omits_include_offscreen_by_default(self, mock_load_config, _ensure, mock_send):
+        mock_load_config.return_value = cli.BrowseConfig(
+            base_url="http://localhost:3000",
+            chrome_port=9222,
+            chrome_profile_dir=Path("/tmp/profile"),
+        )
+        mock_send.return_value = {"ok": True, "command": "inspect"}
+
+        cli.cmd_inspect(mock.Mock(port=None, include_offscreen=False))
+
+        mock_send.assert_called_once_with(9222, "inspect", {})
+
+    @mock.patch("browse.cli.send_request")
+    @mock.patch("browse.cli.ensure_daemon_running")
+    @mock.patch("browse.cli.load_config")
+    def test_inspect_passes_include_offscreen_flag_through(self, mock_load_config, _ensure, mock_send):
+        mock_load_config.return_value = cli.BrowseConfig(
+            base_url="http://localhost:3000",
+            chrome_port=9222,
+            chrome_profile_dir=Path("/tmp/profile"),
+        )
+        mock_send.return_value = {"ok": True, "command": "inspect"}
+
+        cli.cmd_inspect(mock.Mock(port=None, include_offscreen=True))
+
+        mock_send.assert_called_once_with(9222, "inspect", {"include_offscreen": True})
+
     @mock.patch("browse.cli.save_config")
     @mock.patch("browse.cli.prompt_for_config")
     @mock.patch("browse.cli.config_exists", return_value=False)
