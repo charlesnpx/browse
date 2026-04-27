@@ -75,3 +75,16 @@ browse press Enter
 ## Slow daemon responses
 
 If a long action causes the CLI to error with "did not respond within Ns", the daemon may still be running the command. Set `BROWSE_TIMEOUT=120` (or higher) in the environment to wait longer before giving up.
+
+## Year-only and month-only date pickers
+
+`browse pick-date` is for day-grid pickers. If the date trigger opens a year-only or month-only picker (no 7-column day grid), `pick-date` returns `ok: false` with `failed_at: "open-picker"` and `view: "year"|"month"` in the trace. Don't retry `pick-date` — instead use:
+
+- `browse inspect` to find the year/month cell and `browse click` it directly, or
+- `browse type <id> 2026` (or similar) if the trigger accepts free-form text.
+
+`pick-date` also runs a post-action verification step: after committing a date, it reads the trigger value back and compares to the requested ISO date. If they differ, the trace includes `{step: "verify", ok: false, expected, actual}` and outer `ok` is `false`. Trust the verify step; do not assume `pick-day` succeeded just because it returned without error.
+
+## Sign-in persistence
+
+Auth survives across `browse chrome` restarts only if the dev app uses persistent cookies / localStorage. Apps that use session cookies will require re-signing in after a full Chrome quit. To inspect profile state: `browse chrome --status` prints the profile dir, the cookies-file size and mtime, and any Chrome PIDs currently using the profile.

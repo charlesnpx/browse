@@ -9,6 +9,8 @@ from browse.daemon import (
     ManagedPage,
     SIGNATURE_JS,
     INSPECT_JS,
+    OPTIONS_IN_SCOPE_JS,
+    PICKER_VIEW_JS,
     TARGET_KIND_JS,
     TOP_SCOPE_JS,
 )
@@ -128,6 +130,7 @@ class FakePage:
 
     def evaluate(self, script, *args):
         self.last_evaluate_script = script
+        self.last_evaluate_args = args
         if script is SIGNATURE_JS:
             return {
                 "url": self.url,
@@ -139,6 +142,10 @@ class FakePage:
             return "body > div:nth-of-type(2)"
         if script is INSPECT_JS:
             return self.inspect_snapshot
+        if script is PICKER_VIEW_JS:
+            return getattr(self, "picker_view_response", {"ok": True, "view": "day", "cells": 35})
+        if script is OPTIONS_IN_SCOPE_JS:
+            return getattr(self, "options_in_scope_response", [])
         if "activeElement" in script:
             return self.focused
         return self.inspect_snapshot
@@ -299,8 +306,192 @@ class DaemonTest(unittest.TestCase):
 
         self.assertFalse(response["ok"])
         self.assertFalse(response["trace"]["ok"])
-        self.assertEqual(response["trace"]["failed_at"], "open")
+        self.assertEqual(response["trace"]["failed_at"], "select-option")
+        steps = response["trace"]["steps_executed"]
+        select_steps = [s for s in steps if s["step"] == "select-option"]
+        self.assertTrue(select_steps)
+        self.assertFalse(select_steps[-1]["ok"])
         self.assertIn("Completed", response["message"])
+
+    def test_choose_error_lists_available_options_from_active_scope(self):
+        managed = next(iter(self.daemon.pages.values()))
+        managed.last_signature = self.daemon._signature_for_page(managed)
+        button = FakeLocator(role="button", name="-- None --")
+        self.daemon.target_registry[(managed.page_id, "select-trigger")] = LocatorRecipe(
+            target_id="select-trigger",
+            page_id=managed.page_id,
+            scope_id="page",
+            scope_label="page",
+            scope_selector=None,
+            selector="#status-select",
+            role="button",
+            name="-- None --",
+            text="-- None --",
+            index=1,
+        )
+        self.page.options_in_scope_response = [
+            {"text": "-- None --", "name": "", "disabled": False},
+            {"text": "Draft", "name": "", "disabled": True},
+            {"text": "Section Manager Review", "name": "", "disabled": False},
+            {"text": "Ready for EPIC", "name": "", "disabled": False},
+        ]
+
+        with mock.patch.object(self.daemon, "_resolve_recipe", return_value=button):
+            with mock.patch.object(self.daemon, "_classify_target", return_value={"isInput": False, "hasInputChild": False}):
+                with mock.patch.object(self.daemon, "_find_option_in_active_scope", return_value=None):
+                    response = self.daemon.handle("choose", {"target_id": "select-trigger", "text": "Draft Section Manager Review"})
+
+        self.assertFalse(response["ok"])
+        self.assertIn("Section Manager Review", response["message"])
+        self.assertIn("Ready for EPIC", response["message"])
+        steps = response["trace"]["steps_executed"]
+        no_match = [s for s in steps if s["step"] == "select-option" and s["ok"] is False]
+        self.assertTrue(no_match)
+        self.assertIn("Section Manager Review", no_match[-1]["available"])
+        self.assertIn("Draft", no_match[-1]["disabled_options"])
+
+    def test_pick_date_fails_loud_when_picker_is_year_only(self):
+        managed = next(iter(self.daemon.pages.values()))
+        managed.last_signature = self.daemon._signature_for_page(managed)
+        date_button = FakeLocator(role="button", name="change date")
+        self.daemon.target_registry[(managed.page_id, "year-cell")] = LocatorRecipe(
+            target_id="year-cell",
+            page_id=managed.page_id,
+            scope_id="page",
+            scope_label="page",
+            scope_selector=None,
+            selector="#year-cell",
+            role="button",
+            name="change date",
+            text="change date",
+            index=1,
+        )
+        self.page.picker_view_response = {"ok": False, "view": "year", "reason": "year-only-picker"}
+
+        with mock.patch.object(self.daemon, "_resolve_recipe", return_value=date_button):
+            response = self.daemon.handle("pick-date", {"target_id": "year-cell", "iso_date": "2026-04-30"})
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["trace"]["failed_at"], "open-picker")
+        steps = response["trace"]["steps_executed"]
+        self.assertEqual(steps[0]["step"], "open-picker")
+        self.assertFalse(steps[0]["ok"])
+        self.assertEqual(steps[0]["view"], "year")
+        self.assertIn("year-only", response["message"])
+
+    def test_pick_date_verify_step_catches_value_mismatch(self):
+        managed = next(iter(self.daemon.pages.values()))
+        managed.last_signature = self.daemon._signature_for_page(managed)
+
+        class StubInput:
+            def __init__(self, value):
+                self._value = value
+
+            def wait_for(self, **_kwargs):
+                return None
+
+            def scroll_into_view_if_needed(self):
+                return None
+
+            def is_enabled(self):
+                return True
+
+            def bounding_box(self):
+                return {"x": 0, "y": 0, "width": 100, "height": 24}
+
+            def evaluate(self, script):
+                if "elementFromPoint" in script:
+                    return False
+                return {"visible": True, "enabled": True, "expanded": None, "selected": None, "checked": None, "value": self._value, "text": self._value}
+
+            def click(self):
+                return None
+
+            def input_value(self):
+                return self._value
+
+            def inner_text(self):
+                return self._value
+
+            @property
+            def first(self):
+                return self
+
+            def nth(self, _i):
+                return self
+
+            def count(self):
+                return 1
+
+        stub = StubInput(value="1930-04-30")
+        self.daemon.target_registry[(managed.page_id, "date-input")] = LocatorRecipe(
+            target_id="date-input",
+            page_id=managed.page_id,
+            scope_id="page",
+            scope_label="page",
+            scope_selector=None,
+            selector="#date-input",
+            role="textbox",
+            name="Status Date",
+            text="",
+            index=1,
+        )
+        self.page.picker_view_response = {"ok": True, "view": "day", "cells": 35}
+
+        with mock.patch.object(self.daemon, "_resolve_recipe", return_value=stub):
+            with mock.patch.object(self.page, "get_by_role", return_value=stub):
+                response = self.daemon.handle("pick-date", {"target_id": "date-input", "iso_date": "2026-04-30"})
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["trace"]["failed_at"], "verify")
+        verify = [s for s in response["trace"]["steps_executed"] if s["step"] == "verify"]
+        self.assertTrue(verify)
+        self.assertFalse(verify[-1]["ok"])
+        self.assertEqual(verify[-1]["expected"], "2026-04-30")
+        self.assertEqual(verify[-1]["actual"], "1930-04-30")
+
+
+class FrameworkPluginTest(unittest.TestCase):
+    def test_framework_config_aggregates_registered_plugin_hints(self):
+        from browse.frameworks import (
+            FrameworkHints,
+            framework_config,
+            make_plugin,
+            register_plugin,
+            reset_plugins,
+        )
+
+        try:
+            radix_plugin = make_plugin(
+                FrameworkHints(
+                    name="radix",
+                    overlay_selectors=("[data-radix-popper-content-wrapper]",),
+                )
+            )
+            register_plugin(radix_plugin)
+            config = framework_config()
+            self.assertIn(".MuiPickersPopper-root", config["overlaySelectors"])
+            self.assertIn("[data-radix-popper-content-wrapper]", config["overlaySelectors"])
+            self.assertIn(".MuiPickersYearSelection-container", config["yearViewSelectors"])
+        finally:
+            reset_plugins()
+
+    def test_daemon_inspect_passes_framework_overlay_selectors(self):
+        from browse.frameworks import framework_config
+
+        page = FakePage()
+        daemon = BrowseDaemon(port=9222)
+        daemon.browser = FakeBrowser(page)
+        daemon.refresh_pages(auto_select=True)
+        managed = next(iter(daemon.pages.values()))
+
+        daemon._inspect_dom(managed)
+        self.assertIs(page.last_evaluate_script, INSPECT_JS)
+        opts = page.last_evaluate_args[0]
+        config = framework_config()
+        for selector in config["overlaySelectors"]:
+            self.assertIn(selector, opts["overlaySelectors"])
+        self.assertFalse(opts["includeOffscreen"])
 
 
 if __name__ == "__main__":

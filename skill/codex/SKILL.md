@@ -40,3 +40,11 @@ If `browse choose` returns `ok: false` on a button-style MUI v4 `<Select>`, the 
 ## Slow daemon responses
 
 If a CLI call errors with "did not respond within Ns", the daemon may still be running the action. Raise `BROWSE_TIMEOUT=<seconds>` in the environment before retrying — the default is 60s.
+
+## Year-only and month-only date pickers
+
+`browse pick-date` is for day-grid pickers. On a year-only / month-only picker it returns `ok: false` with `failed_at: "open-picker"` and `view: "year"|"month"` — do not retry. Use `browse click` on the year/month cell directly, or `browse type` if the trigger accepts free-form text. `pick-date` also runs a post-action `verify` step that reads the value back and compares to the requested ISO date; treat outer `ok: false` as authoritative.
+
+## Sign-in persistence
+
+Auth survives `browse chrome` restarts only if the dev app uses persistent cookies / localStorage. Run `browse chrome --status` to print profile-dir diagnostics (cookies file size/mtime, Chrome PIDs using the profile).

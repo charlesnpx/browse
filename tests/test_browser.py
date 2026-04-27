@@ -30,9 +30,11 @@ class BrowserHelpersTest(unittest.TestCase):
 
         self.assertIn("Could not find Google Chrome or Chromium", str(exc.exception))
 
+    @mock.patch("browse.browser.is_port_open", return_value=True)
+    @mock.patch("browse.browser.find_chrome_pids_using_profile", return_value=[])
     @mock.patch("browse.browser.resolve_browser_binary")
     @mock.patch("browse.browser.subprocess.Popen")
-    def test_launch_browser_uses_isolated_profile_dir(self, mock_popen, mock_resolve):
+    def test_launch_browser_uses_isolated_profile_dir(self, mock_popen, mock_resolve, _mock_pids, _mock_port):
         mock_resolve.return_value = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
         mock_popen.return_value.pid = 12345
 
@@ -44,6 +46,24 @@ class BrowserHelpersTest(unittest.TestCase):
         self.assertEqual(result.process_id, 12345)
         self.assertIn("--remote-debugging-port=9333", mock_popen.call_args.args[0])
         self.assertIn(f"--user-data-dir={profile_dir.resolve()}", mock_popen.call_args.args[0])
+        self.assertIn("--profile-directory=Default", mock_popen.call_args.args[0])
+
+    @mock.patch("browse.browser.is_port_open", return_value=False)
+    @mock.patch("browse.browser.find_chrome_pids_using_profile", return_value=[7777])
+    @mock.patch("browse.browser.resolve_browser_binary")
+    @mock.patch("browse.browser.subprocess.Popen")
+    def test_launch_browser_raises_when_debug_port_never_opens(self, mock_popen, mock_resolve, _mock_pids, _mock_port):
+        mock_resolve.return_value = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+        mock_popen.return_value.pid = 12345
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "profile"
+            with mock.patch("sys.stderr"):
+                with self.assertRaises(BrowseError) as exc:
+                    launch_browser(BrowserLaunchConfig(port=9333, profile_dir=profile_dir))
+
+        self.assertIn("never opened", str(exc.exception))
+        self.assertIn("7777", str(exc.exception))
 
     def test_connect_over_cdp_raises_friendly_error(self):
         manager = mock.Mock()

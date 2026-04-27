@@ -21,6 +21,7 @@ from browse.browser import (
     BrowserLaunchConfig,
     connect_over_cdp,
 )
+from browse.frameworks import framework_config
 from browse.protocol import DaemonResponse, json_safe, session_socket_path
 
 DEFAULT_IDLE_TIMEOUT_SECONDS = 900
@@ -29,18 +30,15 @@ INSPECT_JS = r"""
 (opts) => {
   const MAX_ITEMS = 120;
   const INCLUDE_OFFSCREEN = !!(opts && opts.includeOffscreen);
-  const scopeSelectors = [
+  const baseScopeSelectors = [
     '[role="dialog"]',
     '[role="listbox"]',
     '[role="menu"]',
     '[role="grid"]',
     '[role="tree"]',
-    '.MuiDialog-root',
-    '.MuiPopover-root',
-    '.MuiAutocomplete-popper',
-    '.MuiPickersPopper-root',
-    '.MuiMenu-paper',
   ];
+  const extraOverlay = (opts && Array.isArray(opts.overlaySelectors)) ? opts.overlaySelectors : [];
+  const scopeSelectors = baseScopeSelectors.concat(extraOverlay);
   const interactiveSelectors = [
     'button',
     'a[href]',
@@ -97,6 +95,21 @@ INSPECT_JS = r"""
     return found ? textOf(found) : '';
   };
 
+  const isDisabledOption = (el) => {
+    if (!el || !el.matches) return false;
+    return el.matches('[aria-disabled="true"],[disabled],:disabled');
+  };
+
+  const optionContainerLabel = (el) => {
+    const optionEls = Array.from(el.querySelectorAll('[role="option"],[role="menuitem"]'))
+      .filter((opt) => !isDisabledOption(opt));
+    if (!optionEls.length) return '';
+    const names = optionEls.map((opt) => textOf(opt)).filter(Boolean);
+    let joined = names.join(' ');
+    if (joined.length > 80) joined = joined.slice(0, 77) + '...';
+    return joined;
+  };
+
   const accessibleName = (el) => {
     const ariaLabel = el.getAttribute('aria-label');
     if (ariaLabel) return ariaLabel.trim();
@@ -117,7 +130,12 @@ INSPECT_JS = r"""
     }
     const title = el.getAttribute('title');
     if (title) return title.trim();
-    return textOf(el);
+    if (el.matches && el.matches('[role="listbox"],[role="menu"],[role="presentation"]')) {
+      const optionLabel = optionContainerLabel(el);
+      if (optionLabel) return optionLabel;
+    }
+    const fallback = textOf(el);
+    return fallback.length > 80 ? fallback.slice(0, 77) + '...' : fallback;
   };
 
   const cssPath = (el) => {
@@ -144,11 +162,6 @@ INSPECT_JS = r"""
     const role = implicitRole(el) || el.getAttribute('role') || 'group';
     const name = accessibleName(el);
     if (name) return `${role}: ${name}`;
-    const classes = Array.from(el.classList || []);
-    if (classes.some((cls) => cls.includes('Pickers'))) return 'popover: date picker';
-    if (classes.some((cls) => cls.includes('Autocomplete'))) return 'popover: autocomplete';
-    if (classes.some((cls) => cls.includes('Dialog'))) return 'dialog';
-    if (classes.some((cls) => cls.includes('Popover'))) return 'popover';
     return `${role || 'scope'} ${index + 1}`;
   };
 
@@ -243,19 +256,16 @@ FOCUSED_JS = r"""
 """
 
 SIGNATURE_JS = r"""
-() => {
-  const scopeSelectors = [
+(opts) => {
+  const baseScopeSelectors = [
     '[role="dialog"]',
     '[role="listbox"]',
     '[role="menu"]',
     '[role="grid"]',
     '[role="tree"]',
-    '.MuiDialog-root',
-    '.MuiPopover-root',
-    '.MuiAutocomplete-popper',
-    '.MuiPickersPopper-root',
-    '.MuiMenu-paper',
   ];
+  const extraOverlay = (opts && Array.isArray(opts.overlaySelectors)) ? opts.overlaySelectors : [];
+  const scopeSelectors = baseScopeSelectors.concat(extraOverlay);
   const isVisible = (el) => {
     const style = getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
@@ -322,19 +332,16 @@ ELEMENT_STATE_JS = r"""
 """
 
 TOP_SCOPE_JS = r"""
-() => {
-  const scopeSelectors = [
+(opts) => {
+  const baseScopeSelectors = [
     '[role="dialog"]',
     '[role="listbox"]',
     '[role="menu"]',
     '[role="grid"]',
     '[role="tree"]',
-    '.MuiDialog-root',
-    '.MuiPopover-root',
-    '.MuiAutocomplete-popper',
-    '.MuiPickersPopper-root',
-    '.MuiMenu-paper',
   ];
+  const extraOverlay = (opts && Array.isArray(opts.overlaySelectors)) ? opts.overlaySelectors : [];
+  const scopeSelectors = baseScopeSelectors.concat(extraOverlay);
   const isVisible = (el) => {
     const style = getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
@@ -387,6 +394,46 @@ TARGET_KIND_JS = r"""
     hasInputChild,
     ariaHasPopup: element.getAttribute ? element.getAttribute('aria-haspopup') : null,
   };
+}
+"""
+
+PICKER_VIEW_JS = r"""
+(opts) => {
+  const baseRoots = ['[role="dialog"]'];
+  const extraRoots = (opts && Array.isArray(opts.dayPickerRootSelectors)) ? opts.dayPickerRootSelectors : [];
+  const yearViews = (opts && Array.isArray(opts.yearViewSelectors)) ? opts.yearViewSelectors : [];
+  const monthViews = (opts && Array.isArray(opts.monthViewSelectors)) ? opts.monthViewSelectors : [];
+  const rootSelector = baseRoots.concat(extraRoots).join(',');
+  const popover = rootSelector ? document.querySelector(rootSelector) : null;
+  if (!popover) return { ok: false, reason: 'no-popover' };
+  const grid = popover.querySelector('[role="grid"]');
+  if (grid) {
+    const cells = Array.from(grid.querySelectorAll('[role="gridcell"]'));
+    if (!cells.length) return { ok: false, view: 'unknown', reason: 'empty-grid' };
+    const firstTop = Math.round(cells[0].getBoundingClientRect().top);
+    const firstRow = cells.filter((c) => Math.abs(Math.round(c.getBoundingClientRect().top) - firstTop) < 3);
+    return { ok: firstRow.length === 7, view: firstRow.length === 7 ? 'day' : 'unknown', cells: cells.length, columns: firstRow.length };
+  }
+  if (yearViews.length && popover.querySelector(yearViews.join(','))) {
+    return { ok: false, view: 'year', reason: 'year-only-picker' };
+  }
+  if (monthViews.length && popover.querySelector(monthViews.join(','))) {
+    return { ok: false, view: 'month', reason: 'month-only-picker' };
+  }
+  return { ok: false, view: 'unknown', reason: 'no-grid' };
+}
+"""
+
+OPTIONS_IN_SCOPE_JS = r"""
+(scopeSelector) => {
+  const root = scopeSelector ? document.querySelector(scopeSelector) : document;
+  if (!root) return [];
+  const els = Array.from(root.querySelectorAll('[role="option"],[role="menuitem"]'));
+  return els.map((el) => ({
+    text: (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim(),
+    name: el.getAttribute('aria-label') || '',
+    disabled: el.matches('[aria-disabled="true"],[disabled],:disabled'),
+  }));
 }
 """
 
@@ -524,13 +571,21 @@ class BrowseDaemon:
                 return managed
         raise DaemonProtocolError("no_page", "No active page is selected. Open a tab in the attached Chrome window first.")
 
+    def _framework_opts(self, **extras: Any) -> dict[str, Any]:
+        opts = dict(framework_config())
+        opts.update(extras)
+        return opts
+
     def _inspect_dom(self, managed: ManagedPage, include_offscreen: bool = False) -> dict[str, Any]:
-        snapshot = managed.page.evaluate(INSPECT_JS, {"includeOffscreen": include_offscreen})
+        snapshot = managed.page.evaluate(
+            INSPECT_JS,
+            self._framework_opts(includeOffscreen=include_offscreen),
+        )
         return snapshot
 
     def _signature_for_page(self, managed: ManagedPage) -> str:
         try:
-            snapshot = managed.page.evaluate(SIGNATURE_JS)
+            snapshot = managed.page.evaluate(SIGNATURE_JS, self._framework_opts())
         except Exception:
             snapshot = {
                 "url": managed.page.url,
@@ -839,36 +894,46 @@ class BrowseDaemon:
         target_id = params["target_id"]
         text = params["text"]
         steps: list[dict[str, Any]] = []
+        current_step = "resolve-target"
         try:
             locator = self._resolve_recipe(managed, target_id)
             self._ensure_actionable(locator)
             kind = self._classify_target(locator)
+            current_step = "open"
             locator.click()
             steps.append({"step": "open", "ok": True, "kind": kind})
 
             if kind.get("isInput") or kind.get("hasInputChild"):
+                current_step = "enter-text"
                 self._enter_text_into(locator, kind, text)
                 steps.append({"step": "enter-text", "ok": True, "text": text})
-                managed.page.wait_for_timeout(120)
-                option = self._find_option_in_active_scope(managed, text)
-                if option is None:
-                    raise DaemonProtocolError(
-                        "option_not_found",
-                        f"No option matched `{text}` in the active overlay after typing.",
-                    )
-                option.click()
-                steps.append({"step": "select-option", "ok": True})
-            else:
-                managed.page.wait_for_timeout(120)
-                option = self._find_option_in_active_scope(managed, text)
-                if option is None:
-                    raise DaemonProtocolError(
-                        "option_not_found",
-                        f"Opened the menu but no option matched `{text}` in the active overlay. "
-                        "If the menu is open, `browse press ArrowDown` then `browse press Enter` is a reliable fallback.",
-                    )
-                option.click()
-                steps.append({"step": "select-option", "ok": True})
+
+            current_step = "select-option"
+            managed.page.wait_for_timeout(120)
+            option = self._find_option_in_active_scope(managed, text)
+            if option is None:
+                available = self._available_options_in_scope(managed)
+                visible = [opt for opt in available if not opt.get("disabled")]
+                disabled = [opt for opt in available if opt.get("disabled")]
+                steps.append(
+                    {
+                        "step": "select-option",
+                        "ok": False,
+                        "reason": "no-match",
+                        "available": [opt.get("text") for opt in visible[:20]],
+                        "disabled_options": [opt.get("text") for opt in disabled[:10]],
+                    }
+                )
+                preview = ", ".join(opt.get("text") or "" for opt in visible[:10] if opt.get("text"))
+                if not preview:
+                    preview = "(no enabled options found)"
+                raise DaemonProtocolError(
+                    "option_not_found",
+                    f"No option matched `{text}` in the active overlay. Available: {preview}. "
+                    "If the menu is open, `browse press ArrowDown` then `browse press Enter` is a reliable fallback.",
+                )
+            option.click()
+            steps.append({"step": "select-option", "ok": True})
 
             self._bump_after_action(managed)
             return self._make_response(
@@ -877,6 +942,11 @@ class BrowseDaemon:
                 payload={"trace": {"ok": True, "steps_executed": steps}},
             )
         except DaemonProtocolError as exc:
+            if not steps or steps[-1].get("step") != current_step or steps[-1].get("ok") is True:
+                if current_step != "select-option" or not any(
+                    s.get("step") == "select-option" and s.get("ok") is False for s in steps
+                ):
+                    steps.append({"step": current_step, "ok": False, "reason": exc.code})
             snapshot = self._inspect_dom(managed)
             return self._make_response(
                 command="choose",
@@ -886,13 +956,27 @@ class BrowseDaemon:
                     "trace": {
                         "ok": False,
                         "steps_executed": steps,
-                        "failed_at": steps[-1]["step"] if steps else "resolve-target",
+                        "failed_at": current_step,
                         "scope_at_failure": snapshot.get("activeScopeLabel") or "page",
                         "inspect_snapshot": snapshot,
                     }
                 },
                 message=str(exc),
             )
+
+    def _available_options_in_scope(self, managed: ManagedPage) -> list[dict[str, Any]]:
+        page = managed.page
+        try:
+            scope_selector = page.evaluate(TOP_SCOPE_JS, self._framework_opts())
+        except Exception:
+            scope_selector = None
+        try:
+            options = page.evaluate(OPTIONS_IN_SCOPE_JS, scope_selector)
+        except Exception:
+            return []
+        if not isinstance(options, list):
+            return []
+        return [opt for opt in options if isinstance(opt, dict)]
 
     def _classify_target(self, locator) -> dict[str, Any]:
         try:
@@ -915,16 +999,50 @@ class BrowseDaemon:
     def _find_option_in_active_scope(self, managed: ManagedPage, text: str):
         page = managed.page
         try:
-            scope_selector = page.evaluate(TOP_SCOPE_JS)
+            scope_selector = page.evaluate(TOP_SCOPE_JS, self._framework_opts())
         except Exception:
             scope_selector = None
+
+        enabled_filter = ':not([aria-disabled="true"]):not([disabled])'
+        option_selector = (
+            f'[role="option"]{enabled_filter}, [role="menuitem"]{enabled_filter}'
+        )
 
         bases = []
         if scope_selector:
             bases.append(page.locator(scope_selector).first)
         bases.append(page)
 
+        target_lower = text.strip().lower()
+
         for base in bases:
+            try:
+                option_locator = base.locator(option_selector)
+                count = option_locator.count()
+            except Exception:
+                count = 0
+            if count:
+                exact_index = -1
+                substring_index = -1
+                for i in range(count):
+                    try:
+                        candidate_text = (option_locator.nth(i).inner_text() or "").strip()
+                    except Exception:
+                        continue
+                    if not candidate_text:
+                        continue
+                    if candidate_text == text:
+                        return option_locator.nth(i)
+                    candidate_lower = candidate_text.lower()
+                    if exact_index == -1 and candidate_lower == target_lower:
+                        exact_index = i
+                    elif substring_index == -1 and target_lower and target_lower in candidate_lower:
+                        substring_index = i
+                if exact_index >= 0:
+                    return option_locator.nth(exact_index)
+                if substring_index >= 0:
+                    return option_locator.nth(substring_index)
+
             try:
                 exact_match = base.get_by_role("option", name=text, exact=True)
                 if exact_match.count():
@@ -949,31 +1067,62 @@ class BrowseDaemon:
         target_id = params["target_id"]
         iso_date = params["iso_date"]
         steps: list[dict[str, Any]] = []
+        current_step = "resolve-target"
         try:
             parsed = date.fromisoformat(iso_date)
             locator = self._resolve_recipe(managed, target_id)
             self._ensure_actionable(locator)
+            current_step = "open-picker"
             locator.click()
-            steps.append({"step": "open-picker", "ok": True})
             managed.page.wait_for_timeout(150)
+            try:
+                view_info = managed.page.evaluate(PICKER_VIEW_JS, self._framework_opts())
+            except Exception:
+                view_info = {"ok": False, "view": "unknown", "reason": "evaluate-failed"}
+            view_info = view_info or {"ok": False, "view": "unknown"}
+            if not view_info.get("ok"):
+                steps.append({"step": "open-picker", "ok": False, **view_info})
+                view = view_info.get("view") or "unknown"
+                reason = view_info.get("reason") or "no-day-grid"
+                raise DaemonProtocolError(
+                    "not_day_picker",
+                    f"Picker opened but is not a day grid (view={view}, reason={reason}). "
+                    "For year-only pickers, use `browse click` on the year directly. "
+                    "For free-form date inputs, use `browse type <id> YYYY-MM-DD`.",
+                )
+            steps.append({"step": "open-picker", "ok": True, "view": view_info.get("view"), "cells": view_info.get("cells")})
+
+            current_step = "pick-day"
             day_name = str(parsed.day)
-            day_locator = managed.page.get_by_role("button", name=day_name)
+            day_locator = managed.page.get_by_role("gridcell", name=day_name, exact=True)
             if day_locator.count() == 0:
-                try:
-                    locator.fill(iso_date)
-                    steps.append({"step": "fill-iso-date", "ok": True, "value": iso_date})
-                except Exception as exc:
-                    raise DaemonProtocolError("date_day_not_found", f"Could not find day button `{day_name}`.") from exc
-            else:
-                day_locator.first.click()
-                steps.append({"step": "pick-day", "ok": True, "day": day_name})
-                ok_button = managed.page.get_by_role("button", name="OK")
-                if ok_button.count():
-                    ok_button.first.click()
-                    steps.append({"step": "confirm", "ok": True})
+                day_locator = managed.page.get_by_role("button", name=day_name, exact=True)
+            if day_locator.count() == 0:
+                raise DaemonProtocolError("date_day_not_found", f"Could not find day cell `{day_name}` in the day grid.")
+            day_locator.first.click()
+            steps.append({"step": "pick-day", "ok": True, "day": day_name})
+
+            current_step = "confirm"
+            ok_button = managed.page.get_by_role("button", name="OK")
+            if ok_button.count():
+                ok_button.first.click()
+                steps.append({"step": "confirm", "ok": True})
+
+            current_step = "verify"
+            verify_step = self._verify_date_value(managed, target_id, parsed, iso_date)
+            steps.append(verify_step)
+            if verify_step.get("ok") is False:
+                raise DaemonProtocolError(
+                    "value_mismatch",
+                    f"Picker committed `{verify_step.get('actual')}` but expected `{iso_date}`. "
+                    "The picker may not be a standard day-grid picker.",
+                )
+
             self._bump_after_action(managed)
             return self._make_response(command="pick-date", managed=managed, payload={"trace": {"ok": True, "steps_executed": steps}})
         except DaemonProtocolError as exc:
+            if not steps or steps[-1].get("step") != current_step or steps[-1].get("ok") is True:
+                steps.append({"step": current_step, "ok": False, "reason": exc.code})
             snapshot = self._inspect_dom(managed)
             return self._make_response(
                 command="pick-date",
@@ -983,13 +1132,39 @@ class BrowseDaemon:
                     "trace": {
                         "ok": False,
                         "steps_executed": steps,
-                        "failed_at": steps[-1]["step"] if steps else "resolve-target",
+                        "failed_at": current_step,
                         "scope_at_failure": snapshot.get("activeScopeLabel") or "page",
                         "inspect_snapshot": snapshot,
                     }
                 },
                 message=str(exc),
             )
+
+    def _verify_date_value(self, managed: ManagedPage, target_id: str, parsed: date, iso_date: str) -> dict[str, Any]:
+        try:
+            locator = self._resolve_recipe(managed, target_id)
+            try:
+                actual = (locator.input_value() or "").strip()
+            except Exception:
+                actual = ""
+            if not actual:
+                try:
+                    actual = (locator.inner_text() or "").strip()
+                except Exception:
+                    actual = ""
+        except Exception:
+            return {"step": "verify", "ok": None, "reason": "verify-skipped"}
+
+        if not actual:
+            return {"step": "verify", "ok": None, "reason": "no-readable-value"}
+
+        year_str = str(parsed.year)
+        if iso_date in actual or actual in iso_date:
+            return {"step": "verify", "ok": True, "actual": actual}
+        normalized = actual.replace("/", "-").replace(".", "-")
+        if year_str in normalized and f"{parsed.month:02d}" in normalized and f"{parsed.day:02d}" in normalized:
+            return {"step": "verify", "ok": True, "actual": actual}
+        return {"step": "verify", "ok": False, "expected": iso_date, "actual": actual}
 
     def _cmd_submit(self, managed: ManagedPage, params: dict[str, Any]) -> dict[str, Any]:
         names = ["save", "submit", "ok", "apply", "done", "update"]

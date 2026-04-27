@@ -3,6 +3,7 @@ from __future__ import annotations
 import socket
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -105,15 +106,72 @@ def is_port_open(port: int, host: str = DEFAULT_CDP_HOST, timeout: float = 0.25)
         return sock.connect_ex((host, port)) == 0
 
 
+def find_chrome_pids_using_profile(profile_dir: Path) -> list[int]:
+    profile_str = str(profile_dir)
+    try:
+        result = subprocess.run(
+            ["pgrep", "-af", f"user-data-dir={profile_str}"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2.0,
+        )
+    except Exception:
+        return []
+    stdout = getattr(result, "stdout", "") or ""
+    pids: list[int] = []
+    for line in stdout.splitlines():
+        parts = line.strip().split(None, 1)
+        if not parts:
+            continue
+        try:
+            pids.append(int(parts[0]))
+        except ValueError:
+            continue
+    return pids
+
+
+def profile_dir_status(profile_dir: Path) -> dict[str, object]:
+    resolved = profile_dir.expanduser().resolve()
+    info: dict[str, object] = {
+        "profile_dir": str(resolved),
+        "exists": resolved.exists(),
+    }
+    if resolved.exists():
+        cookies = resolved / "Default" / "Cookies"
+        info["cookies_path"] = str(cookies)
+        info["cookies_exists"] = cookies.exists()
+        if cookies.exists():
+            try:
+                stat = cookies.stat()
+                info["cookies_size"] = stat.st_size
+                info["cookies_mtime"] = stat.st_mtime
+            except OSError:
+                pass
+    info["chrome_pids"] = find_chrome_pids_using_profile(resolved)
+    return info
+
+
 def launch_browser(config: BrowserLaunchConfig) -> BrowserLaunchResult:
     executable = resolve_browser_binary()
     profile_dir = config.profile_dir.expanduser().resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
 
+    existing_pids = find_chrome_pids_using_profile(profile_dir)
+    if existing_pids:
+        sys.stderr.write(
+            f"warning: Chrome is already running with profile {profile_dir} (PID(s): "
+            f"{', '.join(str(p) for p in existing_pids)}). The new launch may attach to that "
+            "process and ignore --remote-debugging-port. Quit Chrome fully (Cmd+Q on macOS) "
+            "before re-running `browse chrome`.\n"
+        )
+
     args = [
         str(executable),
         f"--remote-debugging-port={config.port}",
         f"--user-data-dir={profile_dir}",
+        "--profile-directory=Default",
         "--no-first-run",
         "--no-default-browser-check",
         "--new-window",
@@ -126,6 +184,25 @@ def launch_browser(config: BrowserLaunchConfig) -> BrowserLaunchResult:
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+
+    deadline = time.time() + 5.0
+    port_opened = False
+    while time.time() < deadline:
+        if is_port_open(config.port):
+            port_opened = True
+            break
+        time.sleep(0.1)
+    if not port_opened:
+        hint = ""
+        if existing_pids:
+            hint = (
+                f" An existing Chrome process (PID(s) {', '.join(str(p) for p in existing_pids)}) "
+                "may have absorbed the launch and ignored the debug port. Fully quit Chrome and retry."
+            )
+        raise BrowseError(
+            f"Chrome launched (PID {process.pid}) but the remote debugging port {config.port} "
+            f"never opened.{hint}"
+        )
 
     return BrowserLaunchResult(
         executable=executable,
