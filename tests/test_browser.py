@@ -9,8 +9,9 @@ from browse.browser import (
     BrowserLaunchConfig,
     BrowseError,
     build_snapshot_paths,
+    cleanup_browse_chrome_processes,
     connect_over_cdp,
-    launch_browser,
+    launch_persistent_context_handle,
     resolve_browser_binary,
     verify_browser_runtime,
 )
@@ -30,40 +31,78 @@ class BrowserHelpersTest(unittest.TestCase):
 
         self.assertIn("Could not find Google Chrome or Chromium", str(exc.exception))
 
-    @mock.patch("browse.browser.is_port_open", return_value=True)
     @mock.patch("browse.browser.find_chrome_pids_using_profile", return_value=[])
-    @mock.patch("browse.browser.resolve_browser_binary")
-    @mock.patch("browse.browser.subprocess.Popen")
-    def test_launch_browser_uses_isolated_profile_dir(self, mock_popen, mock_resolve, _mock_pids, _mock_port):
-        mock_resolve.return_value = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
-        mock_popen.return_value.pid = 12345
+    def test_launch_persistent_context_uses_user_data_dir_and_remote_debugging_port(self, _mock_pids):
+        fake_context = mock.Mock()
+        fake_context.pages = []
+        fake_chromium = mock.Mock()
+        fake_chromium.launch_persistent_context.return_value = fake_context
+        fake_pw = mock.Mock(chromium=fake_chromium)
+        fake_pw_handle = mock.Mock()
+        fake_pw_handle.start.return_value = fake_pw
 
         with tempfile.TemporaryDirectory() as tmpdir:
             profile_dir = Path(tmpdir) / "profile"
-            result = launch_browser(BrowserLaunchConfig(port=9333, profile_dir=profile_dir))
+            handle = launch_persistent_context_handle(
+                BrowserLaunchConfig(port=9333, profile_dir=profile_dir),
+                sync_playwright_factory=mock.Mock(return_value=fake_pw_handle),
+            )
 
-        self.assertEqual(result.port, 9333)
-        self.assertEqual(result.process_id, 12345)
-        self.assertIn("--remote-debugging-port=9333", mock_popen.call_args.args[0])
-        self.assertIn(f"--user-data-dir={profile_dir.resolve()}", mock_popen.call_args.args[0])
-        self.assertIn("--profile-directory=Default", mock_popen.call_args.args[0])
+        kwargs = fake_chromium.launch_persistent_context.call_args.kwargs
+        self.assertEqual(kwargs["user_data_dir"], str(profile_dir.resolve()))
+        self.assertFalse(kwargs["headless"])
+        self.assertIn("--remote-debugging-port=9333", kwargs["args"])
+        fake_context.new_page.assert_called_once_with()
+        self.assertIs(handle.context, fake_context)
 
-    @mock.patch("browse.browser.is_port_open", return_value=False)
     @mock.patch("browse.browser.find_chrome_pids_using_profile", return_value=[7777])
-    @mock.patch("browse.browser.resolve_browser_binary")
-    @mock.patch("browse.browser.subprocess.Popen")
-    def test_launch_browser_raises_when_debug_port_never_opens(self, mock_popen, mock_resolve, _mock_pids, _mock_port):
-        mock_resolve.return_value = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
-        mock_popen.return_value.pid = 12345
+    def test_launch_persistent_context_warns_when_existing_chrome_uses_profile(self, _mock_pids):
+        fake_context = mock.Mock()
+        fake_context.pages = []
+        fake_chromium = mock.Mock()
+        fake_chromium.launch_persistent_context.return_value = fake_context
+        fake_pw = mock.Mock(chromium=fake_chromium)
+        fake_pw_handle = mock.Mock()
+        fake_pw_handle.start.return_value = fake_pw
+
+        captured: list[str] = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "profile"
+            with mock.patch("sys.stderr") as fake_stderr:
+                fake_stderr.write.side_effect = lambda s: captured.append(s)
+                launch_persistent_context_handle(
+                    BrowserLaunchConfig(port=9333, profile_dir=profile_dir),
+                    sync_playwright_factory=mock.Mock(return_value=fake_pw_handle),
+                )
+
+        self.assertTrue(any("7777" in s and "--cleanup" in s for s in captured))
+
+    @mock.patch("browse.browser.time.sleep", return_value=None)
+    @mock.patch("browse.browser.os.kill")
+    @mock.patch("browse.browser.find_chrome_pids_using_profile")
+    def test_cleanup_browse_chrome_processes_terminates_then_kills_remaining(self, mock_find, mock_kill, _mock_sleep):
+        # 1: initial scan; 2: post-SIGTERM still has 200; 3: still 200 → break;
+        # 4: SIGKILL loop scan; 5: final scan after kill.
+        call_results = [
+            [100, 200, 300],
+            [200],
+            [],
+            [200],
+            [],
+        ]
+        mock_find.side_effect = lambda _profile_dir: call_results.pop(0) if call_results else []
 
         with tempfile.TemporaryDirectory() as tmpdir:
             profile_dir = Path(tmpdir) / "profile"
-            with mock.patch("sys.stderr"):
-                with self.assertRaises(BrowseError) as exc:
-                    launch_browser(BrowserLaunchConfig(port=9333, profile_dir=profile_dir))
+            profile_dir.mkdir()
+            result = cleanup_browse_chrome_processes(profile_dir)
 
-        self.assertIn("never opened", str(exc.exception))
-        self.assertIn("7777", str(exc.exception))
+        sigterm_calls = [c for c in mock_kill.call_args_list if c.args[1] == 15]
+        sigkill_calls = [c for c in mock_kill.call_args_list if c.args[1] == 9]
+        self.assertEqual({c.args[0] for c in sigterm_calls}, {100, 200, 300})
+        self.assertEqual({c.args[0] for c in sigkill_calls}, {200})
+        self.assertEqual(result["terminated_pids"], [100, 200, 300])
+        self.assertEqual(result["remaining_pids"], [])
 
     def test_connect_over_cdp_raises_friendly_error(self):
         manager = mock.Mock()
