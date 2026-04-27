@@ -12,11 +12,14 @@ Version `0.1.0` is intentionally narrow:
 ## Install
 
 ```bash
-# from a local checkout
-pipx install ~/WebstormProjects/browse
+pipx install git+ssh://git@github.com/charlesnpx/browse.git
+```
 
-# later, from a git remote
-pipx install git+ssh://git@github.com/<you>/browse.git
+or
+
+```bash
+# from a local checkout
+pipx install ~/browse
 ```
 
 Then run:
