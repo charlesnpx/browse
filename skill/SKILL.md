@@ -28,17 +28,22 @@ Do not auto-trigger this skill for ordinary coding or debugging.
    ```
    Then ask them to sign in inside that dedicated browser window if the app needs auth.
 
-3. Use `browse open` for manual inspection when needed:
+3. If the configured base URL is missing or wrong, have the user run:
    ```bash
-   browse open http://localhost:3000
+   browse config
    ```
 
-4. Use `browse snapshot` for verification after UI changes instead of claiming visual success without checking:
+4. Use `browse open` for manual inspection when needed:
    ```bash
-   browse snapshot http://localhost:3000 --output /tmp/page.png
+   browse open
    ```
 
-5. For interactive flows, apply ordered actions exactly as needed:
+5. Use `browse snapshot` for verification after UI changes instead of claiming visual success without checking:
+   ```bash
+   browse snapshot --output /tmp/page.png
+   ```
+
+6. For interactive flows, apply ordered actions exactly as needed:
    ```bash
    browse snapshot http://localhost:3000/login \
      --output /tmp/login.png \
@@ -48,7 +53,7 @@ Do not auto-trigger this skill for ordinary coding or debugging.
      --wait-for '[data-testid="home"]'
    ```
 
-6. Inspect both outputs before summarizing:
+7. Inspect both outputs before summarizing:
    - the PNG screenshot
    - the adjacent `.log` file with console errors, page errors, and failed requests
 
@@ -56,4 +61,3 @@ Do not auto-trigger this skill for ordinary coding or debugging.
 
 - `browse` uses a dedicated browser profile for session continuity.
 - If login expires, have the user re-open the `browse` browser window and sign in again there.
-
