@@ -32,3 +32,11 @@ Use this skill only for explicit browser verification.
 - `browse` prefers the user’s installed Chrome/Chromium binary and a dedicated `browse` profile.
 - If a composite fails, inspect its trace and drop down to primitives at the failed step.
 - If the configured base URL is missing or outdated, instruct the user to run `browse config`.
+
+## Native MUI Select fallback
+
+If `browse choose` returns `ok: false` on a button-style MUI v4 `<Select>`, the menu is usually still open. Fall back to keyboard navigation: `browse press ArrowDown` then `browse press Enter`. This works even when the role/name match is ambiguous in the open menu.
+
+## Slow daemon responses
+
+If a CLI call errors with "did not respond within Ns", the daemon may still be running the action. Raise `BROWSE_TIMEOUT=<seconds>` in the environment before retrying — the default is 60s.

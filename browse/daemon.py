@@ -26,8 +26,9 @@ from browse.protocol import DaemonResponse, json_safe, session_socket_path
 DEFAULT_IDLE_TIMEOUT_SECONDS = 900
 
 INSPECT_JS = r"""
-() => {
+(opts) => {
   const MAX_ITEMS = 120;
+  const INCLUDE_OFFSCREEN = !!(opts && opts.includeOffscreen);
   const scopeSelectors = [
     '[role="dialog"]',
     '[role="listbox"]',
@@ -61,7 +62,12 @@ INSPECT_JS = r"""
     const style = getComputedStyle(el);
     if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
     const rect = el.getBoundingClientRect();
-    return rect.width > 0 && rect.height > 0;
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    if (!INCLUDE_OFFSCREEN) {
+      if (rect.bottom <= 0 || rect.right <= 0) return false;
+      if (rect.top >= window.innerHeight || rect.left >= window.innerWidth) return false;
+    }
+    return true;
   };
 
   const isEnabled = (el) => !el.matches(':disabled,[disabled],[aria-disabled="true"]');
@@ -236,6 +242,70 @@ FOCUSED_JS = r"""
 }
 """
 
+SIGNATURE_JS = r"""
+() => {
+  const scopeSelectors = [
+    '[role="dialog"]',
+    '[role="listbox"]',
+    '[role="menu"]',
+    '[role="grid"]',
+    '[role="tree"]',
+    '.MuiDialog-root',
+    '.MuiPopover-root',
+    '.MuiAutocomplete-popper',
+    '.MuiPickersPopper-root',
+    '.MuiMenu-paper',
+  ];
+  const isVisible = (el) => {
+    const style = getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const cssEscape = (value) => {
+    if (globalThis.CSS && CSS.escape) return CSS.escape(value);
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  };
+  const cssPath = (el) => {
+    if (!el || el.nodeType !== 1) return null;
+    if (el.id) return `#${cssEscape(el.id)}`;
+    const segments = [];
+    let node = el;
+    while (node && node.nodeType === 1 && node !== document.body) {
+      const tag = node.tagName.toLowerCase();
+      const parent = node.parentElement;
+      if (!parent) { segments.unshift(tag); break; }
+      const siblings = Array.from(parent.children).filter((c) => c.tagName === node.tagName);
+      const index = siblings.indexOf(node) + 1;
+      segments.unshift(`${tag}:nth-of-type(${index})`);
+      node = parent;
+    }
+    segments.unshift('body');
+    return segments.join(' > ');
+  };
+  const scopeNodes = Array.from(document.querySelectorAll(scopeSelectors.join(','))).filter(isVisible);
+  let topScopeLabel = 'page';
+  if (scopeNodes.length) {
+    let topMost = scopeNodes[0];
+    let topZ = parseInt(getComputedStyle(topMost).zIndex || '0', 10) || 0;
+    for (const candidate of scopeNodes) {
+      const z = parseInt(getComputedStyle(candidate).zIndex || '0', 10) || 0;
+      if (z > topZ) { topMost = candidate; topZ = z; }
+    }
+    const role = topMost.getAttribute('role') || topMost.tagName.toLowerCase();
+    const name = topMost.getAttribute('aria-label') || (topMost.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+    topScopeLabel = name ? `${role}: ${name}` : role;
+  }
+  const focusedEl = document.activeElement instanceof Element ? document.activeElement : null;
+  return {
+    url: location.href,
+    activeScopeLabel: topScopeLabel,
+    scopeCount: scopeNodes.length,
+    focusedSelector: focusedEl ? cssPath(focusedEl) : null,
+  };
+}
+"""
+
 ELEMENT_STATE_JS = r"""
 (element) => {
   const attr = (name) => element.getAttribute(name);
@@ -247,6 +317,75 @@ ELEMENT_STATE_JS = r"""
     checked: attr('aria-checked') ?? (typeof element.checked === 'boolean' ? String(element.checked) : null),
     value: typeof element.value === 'string' ? element.value : null,
     text: (element.innerText || element.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+  };
+}
+"""
+
+TOP_SCOPE_JS = r"""
+() => {
+  const scopeSelectors = [
+    '[role="dialog"]',
+    '[role="listbox"]',
+    '[role="menu"]',
+    '[role="grid"]',
+    '[role="tree"]',
+    '.MuiDialog-root',
+    '.MuiPopover-root',
+    '.MuiAutocomplete-popper',
+    '.MuiPickersPopper-root',
+    '.MuiMenu-paper',
+  ];
+  const isVisible = (el) => {
+    const style = getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const cssEscape = (value) => {
+    if (globalThis.CSS && CSS.escape) return CSS.escape(value);
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  };
+  const cssPath = (el) => {
+    if (el.id) return `#${cssEscape(el.id)}`;
+    const segments = [];
+    let node = el;
+    while (node && node.nodeType === 1 && node !== document.body) {
+      const tag = node.tagName.toLowerCase();
+      const parent = node.parentElement;
+      if (!parent) { segments.unshift(tag); break; }
+      const siblings = Array.from(parent.children).filter((c) => c.tagName === node.tagName);
+      const index = siblings.indexOf(node) + 1;
+      segments.unshift(`${tag}:nth-of-type(${index})`);
+      node = parent;
+    }
+    segments.unshift('body');
+    return segments.join(' > ');
+  };
+  const nodes = Array.from(document.querySelectorAll(scopeSelectors.join(','))).filter(isVisible);
+  if (!nodes.length) return null;
+  let top = nodes[0];
+  let topZ = parseInt(getComputedStyle(top).zIndex || '0', 10) || 0;
+  for (const n of nodes) {
+    const z = parseInt(getComputedStyle(n).zIndex || '0', 10) || 0;
+    if (z > topZ) { top = n; topZ = z; }
+  }
+  return cssPath(top);
+}
+"""
+
+TARGET_KIND_JS = r"""
+(element) => {
+  if (!element) return { kind: 'unknown' };
+  const tag = element.tagName ? element.tagName.toLowerCase() : '';
+  const role = element.getAttribute ? element.getAttribute('role') : null;
+  const isInput = tag === 'input' || tag === 'textarea';
+  const hasInputChild = element.querySelector ? !!element.querySelector('input, textarea') : false;
+  return {
+    tag,
+    role,
+    isInput,
+    hasInputChild,
+    ariaHasPopup: element.getAttribute ? element.getAttribute('aria-haspopup') : null,
   };
 }
 """
@@ -385,19 +524,21 @@ class BrowseDaemon:
                 return managed
         raise DaemonProtocolError("no_page", "No active page is selected. Open a tab in the attached Chrome window first.")
 
-    def _inspect_dom(self, managed: ManagedPage) -> dict[str, Any]:
-        snapshot = managed.page.evaluate(INSPECT_JS)
+    def _inspect_dom(self, managed: ManagedPage, include_offscreen: bool = False) -> dict[str, Any]:
+        snapshot = managed.page.evaluate(INSPECT_JS, {"includeOffscreen": include_offscreen})
         return snapshot
 
     def _signature_for_page(self, managed: ManagedPage) -> str:
-        snapshot = self._inspect_dom(managed)
-        focused = managed.page.evaluate(FOCUSED_JS)
-        signature = {
-            "url": managed.page.url,
-            "active_scope": snapshot.get("activeScopeLabel"),
-            "focused": focused,
-        }
-        return json.dumps(signature, sort_keys=True)
+        try:
+            snapshot = managed.page.evaluate(SIGNATURE_JS)
+        except Exception:
+            snapshot = {
+                "url": managed.page.url,
+                "activeScopeLabel": "page",
+                "scopeCount": 0,
+                "focusedSelector": None,
+            }
+        return json.dumps(snapshot, sort_keys=True)
 
     def _sync_state_version(self, managed: ManagedPage) -> None:
         signature = self._signature_for_page(managed)
@@ -418,9 +559,9 @@ class BrowseDaemon:
                 page_id=managed.page_id,
             )
 
-    def _make_response(self, command: str, managed: ManagedPage | None, payload: dict[str, Any] | None = None, message: str | None = None) -> dict[str, Any]:
+    def _make_response(self, command: str, managed: ManagedPage | None, payload: dict[str, Any] | None = None, message: str | None = None, ok: bool = True) -> dict[str, Any]:
         return DaemonResponse(
-            ok=True,
+            ok=ok,
             command=command,
             page_id=managed.page_id if managed is not None else None,
             state_version=managed.state_version if managed is not None else None,
@@ -520,11 +661,8 @@ class BrowseDaemon:
         return locator.evaluate(ELEMENT_STATE_JS)
 
     def _bump_after_action(self, managed: ManagedPage) -> None:
-        previous_version = managed.state_version
-        self._sync_state_version(managed)
-        if managed.state_version == previous_version:
-            managed.state_version = previous_version + 1
-            managed.last_signature = self._signature_for_page(managed)
+        managed.state_version += 1
+        managed.last_signature = None
 
     def handle(self, command: str, params: dict[str, Any]) -> dict[str, Any]:
         self.last_activity = time.time()
@@ -581,7 +719,7 @@ class BrowseDaemon:
         if command == "inspect":
             managed = self._selected_page()
             self._sync_state_version(managed)
-            snapshot = self._inspect_dom(managed)
+            snapshot = self._inspect_dom(managed, include_offscreen=bool(params.get("include_offscreen")))
             self.target_registry = {
                 key: recipe for key, recipe in self.target_registry.items() if recipe.page_id != managed.page_id
             }
@@ -704,28 +842,46 @@ class BrowseDaemon:
         try:
             locator = self._resolve_recipe(managed, target_id)
             self._ensure_actionable(locator)
+            kind = self._classify_target(locator)
             locator.click()
-            steps.append({"step": "focus", "ok": True})
-            try:
-                locator.fill(text)
-            except Exception:
-                locator.press_sequentially(text)
-            steps.append({"step": "enter-text", "ok": True, "text": text})
-            managed.page.wait_for_timeout(150)
-            option = managed.page.get_by_role("option", name=text)
-            if option.count() == 0:
-                option = managed.page.get_by_text(text, exact=True)
-            if option.count() == 0:
-                raise DaemonProtocolError("option_not_found", f"No option matched `{text}`.")
-            option.first.click()
-            steps.append({"step": "select-option", "ok": True})
+            steps.append({"step": "open", "ok": True, "kind": kind})
+
+            if kind.get("isInput") or kind.get("hasInputChild"):
+                self._enter_text_into(locator, kind, text)
+                steps.append({"step": "enter-text", "ok": True, "text": text})
+                managed.page.wait_for_timeout(120)
+                option = self._find_option_in_active_scope(managed, text)
+                if option is None:
+                    raise DaemonProtocolError(
+                        "option_not_found",
+                        f"No option matched `{text}` in the active overlay after typing.",
+                    )
+                option.click()
+                steps.append({"step": "select-option", "ok": True})
+            else:
+                managed.page.wait_for_timeout(120)
+                option = self._find_option_in_active_scope(managed, text)
+                if option is None:
+                    raise DaemonProtocolError(
+                        "option_not_found",
+                        f"Opened the menu but no option matched `{text}` in the active overlay. "
+                        "If the menu is open, `browse press ArrowDown` then `browse press Enter` is a reliable fallback.",
+                    )
+                option.click()
+                steps.append({"step": "select-option", "ok": True})
+
             self._bump_after_action(managed)
-            return self._make_response(command="choose", managed=managed, payload={"trace": {"ok": True, "steps_executed": steps}})
+            return self._make_response(
+                command="choose",
+                managed=managed,
+                payload={"trace": {"ok": True, "steps_executed": steps}},
+            )
         except DaemonProtocolError as exc:
             snapshot = self._inspect_dom(managed)
             return self._make_response(
                 command="choose",
                 managed=managed,
+                ok=False,
                 payload={
                     "trace": {
                         "ok": False,
@@ -737,6 +893,57 @@ class BrowseDaemon:
                 },
                 message=str(exc),
             )
+
+    def _classify_target(self, locator) -> dict[str, Any]:
+        try:
+            kind = locator.evaluate(TARGET_KIND_JS)
+        except Exception:
+            return {"kind": "unknown"}
+        return kind or {"kind": "unknown"}
+
+    def _enter_text_into(self, locator, kind: dict[str, Any], text: str) -> None:
+        try:
+            locator.fill(text)
+            return
+        except Exception:
+            pass
+        try:
+            locator.press_sequentially(text)
+        except Exception:
+            locator.type(text)
+
+    def _find_option_in_active_scope(self, managed: ManagedPage, text: str):
+        page = managed.page
+        try:
+            scope_selector = page.evaluate(TOP_SCOPE_JS)
+        except Exception:
+            scope_selector = None
+
+        bases = []
+        if scope_selector:
+            bases.append(page.locator(scope_selector).first)
+        bases.append(page)
+
+        for base in bases:
+            try:
+                exact_match = base.get_by_role("option", name=text, exact=True)
+                if exact_match.count():
+                    return exact_match.first
+            except Exception:
+                pass
+            try:
+                fuzzy_match = base.get_by_role("option", name=text, exact=False)
+                if fuzzy_match.count():
+                    return fuzzy_match.first
+            except Exception:
+                pass
+            try:
+                text_match = base.get_by_text(text, exact=True)
+                if text_match.count():
+                    return text_match.first
+            except Exception:
+                pass
+        return None
 
     def _cmd_pick_date(self, managed: ManagedPage, params: dict[str, Any]) -> dict[str, Any]:
         target_id = params["target_id"]
@@ -771,6 +978,7 @@ class BrowseDaemon:
             return self._make_response(
                 command="pick-date",
                 managed=managed,
+                ok=False,
                 payload={
                     "trace": {
                         "ok": False,

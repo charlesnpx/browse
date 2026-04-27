@@ -97,6 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     inspect_parser = subparsers.add_parser("inspect", help="Inspect actionable elements grouped by active scope")
     inspect_parser.add_argument("--port", type=int, default=None)
+    inspect_parser.add_argument(
+        "--include-offscreen",
+        action="store_true",
+        help="Include elements rendered off-viewport (default: viewport-only).",
+    )
     inspect_parser.set_defaults(handler=cmd_inspect)
 
     click_parser = subparsers.add_parser("click", help="Click a previously inspected target_id")
@@ -309,7 +314,10 @@ def cmd_select_page(args) -> CommandResult:
 
 
 def cmd_inspect(args) -> CommandResult:
-    return CommandResult(exit_code=0, data=_daemon_call(args, "inspect", {}))
+    params: dict[str, Any] = {}
+    if getattr(args, "include_offscreen", False):
+        params["include_offscreen"] = True
+    return CommandResult(exit_code=0, data=_daemon_call(args, "inspect", params))
 
 
 def cmd_click(args) -> CommandResult:

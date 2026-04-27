@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
@@ -10,6 +11,21 @@ from browse.browser import BrowseError, DEFAULT_PORT
 
 DEFAULT_SESSION_DIR = Path.home() / ".browse"
 SOCKET_TEMPLATE = "session-{port}.sock"
+DEFAULT_CLIENT_TIMEOUT_SECONDS = 60.0
+
+
+def _resolve_timeout(timeout: float | None) -> float:
+    if timeout is not None:
+        return timeout
+    raw = os.environ.get("BROWSE_TIMEOUT")
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return DEFAULT_CLIENT_TIMEOUT_SECONDS
 
 
 @dataclass(frozen=True)
@@ -74,7 +90,8 @@ def json_safe(value: Any) -> Any:
     return value
 
 
-def send_request(port: int, command: str, params: dict[str, Any] | None = None, *, timeout: float = 15.0) -> dict[str, Any]:
+def send_request(port: int, command: str, params: dict[str, Any] | None = None, *, timeout: float | None = None) -> dict[str, Any]:
+    effective_timeout = _resolve_timeout(timeout)
     socket_path = session_socket_path(port)
     if not socket_path.exists():
         raise DaemonClientError(
@@ -85,7 +102,7 @@ def send_request(port: int, command: str, params: dict[str, Any] | None = None, 
 
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout)
+            sock.settimeout(effective_timeout)
             sock.connect(str(socket_path))
             sock.sendall(encode_message(json_safe(asdict(request))))
             chunks: list[bytes] = []
@@ -100,12 +117,23 @@ def send_request(port: int, command: str, params: dict[str, Any] | None = None, 
         raise DaemonClientError(
             f"No browse session is running for port {port}. Run `browse session start` after `browse chrome`."
         ) from exc
-    except (socket.timeout, ConnectionError, OSError) as exc:
+    except ConnectionRefusedError as exc:
         raise DaemonClientError(
-            f"Could not reach the browse session on port {port}. Run `browse session start` after `browse chrome`."
+            f"The browse session socket exists at port {port} but the daemon is not accepting connections. Run `browse session start`."
+        ) from exc
+    except socket.timeout as exc:
+        raise DaemonClientError(
+            f"The browse session did not respond within {effective_timeout:.0f}s on port {port}. "
+            "The action may still be running in the daemon — set BROWSE_TIMEOUT=<seconds> to wait longer."
+        ) from exc
+    except OSError as exc:
+        raise DaemonClientError(
+            f"Lost connection while talking to the browse session on port {port}: {exc}."
         ) from exc
 
     raw = b"".join(chunks).splitlines()[0] if chunks else b""
     if not raw:
-        raise DaemonClientError("The browse session returned an empty response.")
+        raise DaemonClientError(
+            f"The browse session on port {port} closed the connection without responding."
+        )
     return decode_message(raw)

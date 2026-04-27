@@ -60,3 +60,18 @@ Do not auto-trigger this skill for ordinary coding or debugging.
 - `browse` uses your installed Chrome/Chromium binary, but keeps auth in a dedicated `browse` profile by default.
 - If login expires, have the user reopen the `browse` browser window and sign in again there.
 - If a composite fails, read its trace (`steps_executed`, `failed_at`, `scope_at_failure`, `inspect_snapshot`) and fall back to primitives.
+
+## Native MUI Select fallback
+
+If `browse choose` returns `ok: false` on a button-style MUI v4 `<Select>`, the menu is usually still open. The reliable fallback is keyboard navigation:
+
+```bash
+browse press ArrowDown
+browse press Enter
+```
+
+`browse choose` already routes button-style triggers to a click-the-option flow scoped to the active overlay, but tightly-styled custom dropdowns can still miss. The keyboard fallback works regardless.
+
+## Slow daemon responses
+
+If a long action causes the CLI to error with "did not respond within Ns", the daemon may still be running the command. Set `BROWSE_TIMEOUT=120` (or higher) in the environment to wait longer before giving up.
