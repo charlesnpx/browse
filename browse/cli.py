@@ -27,7 +27,7 @@ from browse.config import (
 )
 from browse.daemon import DEFAULT_IDLE_TIMEOUT_SECONDS, ensure_daemon_running
 from browse.protocol import DaemonClientError, send_request
-from browse.skills import NO_SUPPORTED_CLIS_MESSAGE, install_skills
+from browse.skills import NO_SUPPORTED_CLIS_MESSAGE, install_skills, run_install_contract
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,12 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.set_defaults(handler=cmd_install)
 
     skills_parser = subparsers.add_parser("install-skills", help="Install Claude/Codex skills")
+    skills_parser.add_argument("--target", choices=["claude", "codex", "all"], default="all")
+    op = skills_parser.add_mutually_exclusive_group()
+    op.add_argument("--plan", action="store_true", help="Print intended files without writing")
+    op.add_argument("--install", action="store_true", help="Install skill files (default)")
+    op.add_argument("--uninstall", action="store_true", help="Remove skill files")
+    skills_parser.add_argument("--json", action="store_true", help="Emit mise-en-place delegated-installer JSON on stdout")
     skills_parser.set_defaults(handler=cmd_install_skills)
 
     init_parser = subparsers.add_parser("init", help="Install runtime and skills")
@@ -229,8 +235,11 @@ def cmd_install(args) -> CommandResult:
     )
 
 
-def cmd_install_skills(_args) -> CommandResult:
-    installed = install_skills()
+def cmd_install_skills(args) -> CommandResult:
+    if getattr(args, "json", False) or getattr(args, "plan", False) or getattr(args, "uninstall", False):
+        return CommandResult(exit_code=run_install_contract(args))
+    target = getattr(args, "target", "all") if args is not None else "all"
+    installed = install_skills() if target == "all" else install_skills(target=target)
     if not installed:
         return CommandResult(exit_code=0, message=NO_SUPPORTED_CLIS_MESSAGE)
 
