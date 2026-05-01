@@ -63,11 +63,16 @@ def _remove_path(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-def _target_specs(target: Target = "all") -> dict[str, list[tuple[Path, Path]]]:
+def _home_for_install(install_root: str | None) -> Path:
+    return Path(install_root).expanduser().resolve() if install_root else Path.home()
+
+
+def _target_specs(target: Target = "all", install_root: str | None = None) -> dict[str, list[tuple[Path, Path]]]:
     bundle = bundle_dir()
-    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    home = _home_for_install(install_root)
+    codex_home = home / ".codex" if install_root else Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
     specs = {
-        "claude": [(bundle / "SKILL.md", Path.home() / ".claude" / "skills" / "browse" / "SKILL.md")],
+        "claude": [(bundle / "SKILL.md", home / ".claude" / "skills" / "browse" / "SKILL.md")],
         "codex": [(bundle / "codex", codex_home / "skills" / "browse")],
     }
     if target == "all":
@@ -91,8 +96,14 @@ def _records_for_dst(dst: Path, include_hash: bool) -> list[dict[str, str]]:
     return [_record_file(dst, include_hash)]
 
 
-def delegated_result(operation: Operation, target: Target = "all", *, perform: bool = False) -> dict[str, Any]:
-    specs = _target_specs(target)
+def delegated_result(
+    operation: Operation,
+    target: Target = "all",
+    *,
+    perform: bool = False,
+    install_root: str | None = None,
+) -> dict[str, Any]:
+    specs = _target_specs(target, install_root)
     result: dict[str, Any] = {
         "schema": 1,
         "name": "browse",
@@ -127,8 +138,8 @@ def delegated_result(operation: Operation, target: Target = "all", *, perform: b
     return result
 
 
-def install_skills(target: Target = "all", *, json_mode: bool = False) -> list[str]:
-    result = delegated_result("install", target, perform=True)
+def install_skills(target: Target = "all", *, json_mode: bool = False, install_root: str | None = None) -> list[str]:
+    result = delegated_result("install", target, perform=True, install_root=install_root)
     if json_mode:
         print(json.dumps(result, indent=2))
         return []
@@ -145,7 +156,12 @@ def run_install_contract(args: Any) -> int:
         operation = "plan"
     elif getattr(args, "uninstall", False):
         operation = "uninstall"
-    result = delegated_result(operation, args.target, perform=operation != "plan")
+    result = delegated_result(
+        operation,
+        args.target,
+        perform=operation != "plan",
+        install_root=getattr(args, "install_root", None),
+    )
     if args.json:
         print(json.dumps(result, indent=2))
     else:

@@ -29,7 +29,16 @@ class SkillInstallTest(unittest.TestCase):
             self.assertTrue((home / ".claude" / "skills" / "browse" / "SKILL.md").exists())
             self.assertTrue((codex_home / "skills" / "browse" / "SKILL.md").exists())
 
+    def test_install_root_stages_under_supplied_home(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            stage = Path(tmpdir) / "stage"
+
+            installed = install_skills(install_root=str(stage))
+
+            self.assertEqual(len(installed), 2)
+            self.assertTrue((stage / ".claude" / "skills" / "browse" / "SKILL.md").exists())
+            self.assertTrue((stage / ".codex" / "skills" / "browse" / "SKILL.md").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
-
