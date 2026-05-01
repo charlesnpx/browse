@@ -155,11 +155,16 @@ Install the bundled skills with:
 
 ```bash
 browse install-skills
+browse install-skills --install --target all --json --install-root /tmp/browse-skill-stage
 ```
 
 Installed locations:
 - Claude: `~/.claude/skills/browse/SKILL.md`
 - Codex: `~/.codex/skills/browse/`
+
+`--install-root` is for delegated installers such as `mise-en-place`; it stages
+files under the supplied directory as if it were `$HOME` and reports those
+staged absolute paths in JSON.
 
 The skills are explicit-use only. They are for direct browser verification requests, not general coding.
 

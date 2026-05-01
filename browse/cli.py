@@ -63,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     op.add_argument("--install", action="store_true", help="Install skill files (default)")
     op.add_argument("--uninstall", action="store_true", help="Remove skill files")
     skills_parser.add_argument("--json", action="store_true", help="Emit mise-en-place delegated-installer JSON on stdout")
+    skills_parser.add_argument("--install-root", help="Stage install under this absolute directory as if it were HOME")
     skills_parser.set_defaults(handler=cmd_install_skills)
 
     init_parser = subparsers.add_parser("init", help="Install runtime and skills")
