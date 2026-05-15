@@ -57,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     install_parser.set_defaults(handler=cmd_install)
 
     skills_parser = subparsers.add_parser("install-skills", help="Install Claude/Codex skills")
-    skills_parser.add_argument("--target", choices=["claude", "codex", "all"], default="all")
+    skills_parser.add_argument("--target", choices=["claude", "codex", "tools", "all"], default="all")
     op = skills_parser.add_mutually_exclusive_group()
     op.add_argument("--plan", action="store_true", help="Print intended files without writing")
     op.add_argument("--install", action="store_true", help="Install skill files (default)")

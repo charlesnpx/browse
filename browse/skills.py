@@ -16,7 +16,7 @@ NO_SUPPORTED_CLIS_MESSAGE = (
     "  Install Claude Code or Codex CLI first."
 )
 
-Target = Literal["claude", "codex", "all"]
+Target = Literal["claude", "codex", "tools", "all"]
 Operation = Literal["plan", "install", "uninstall"]
 
 
@@ -103,7 +103,6 @@ def delegated_result(
     perform: bool = False,
     install_root: str | None = None,
 ) -> dict[str, Any]:
-    specs = _target_specs(target, install_root)
     result: dict[str, Any] = {
         "schema": 1,
         "name": "browse",
@@ -113,7 +112,11 @@ def delegated_result(
         "targets": {},
         "warnings": [],
     }
+    if target == "tools":
+        result["targets"]["tools"] = {"files": []}
+        return result
 
+    specs = _target_specs(target, install_root)
     for target_name, pairs in specs.items():
         if operation == "install" and perform:
             for src, dst in pairs:
@@ -143,6 +146,8 @@ def install_skills(target: Target = "all", *, json_mode: bool = False, install_r
     if json_mode:
         print(json.dumps(result, indent=2))
         return []
+    if target == "tools":
+        return ["Tools target is managed by mise-en-place via pipx"]
     installed: list[str] = []
     for target_name, info in result["targets"].items():
         for f in info["files"]:

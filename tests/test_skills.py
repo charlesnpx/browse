@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from browse.skills import install_skills
+from browse.skills import delegated_result, install_skills
 
 
 class SkillInstallTest(unittest.TestCase):
@@ -38,6 +38,11 @@ class SkillInstallTest(unittest.TestCase):
             self.assertEqual(len(installed), 2)
             self.assertTrue((stage / ".claude" / "skills" / "browse" / "SKILL.md").exists())
             self.assertTrue((stage / ".codex" / "skills" / "browse" / "SKILL.md").exists())
+
+    def test_delegated_result_accepts_tools_target_without_files(self):
+        result = delegated_result("plan", "tools")
+
+        self.assertEqual(result["targets"], {"tools": {"files": []}})
 
 
 if __name__ == "__main__":
